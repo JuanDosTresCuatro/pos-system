@@ -254,9 +254,17 @@ ol.steps li { margin-bottom: 6px; }
 
 /* ---------- small screens */
 @media (max-width: 900px) {
-  main.view-sell { grid-template-columns: 1fr; overflow: auto; }
-  .cart { min-height: 420px; }
-  .grid { max-height: 50vh; }
+  #app { height: auto; min-height: 100%; }
+  main { overflow: visible; }
+  main.view-sell { display: block; overflow: visible; padding: 12px; }
+  .cart { margin-top: 16px; }
+  .cart-lines { max-height: none; }
+  .grid { max-height: none; overflow: visible; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  header.top { gap: 8px; padding: 8px 12px; }
+  header nav { order: 3; flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  header nav button { flex: none; }
+  header .who { margin-left: auto; gap: 2px; }
+  header .who > span { display: none; }
   .grid-form { grid-template-columns: 1fr; }
   .grid-form .span2 { grid-column: auto; }
   .report-grid { grid-template-columns: 1fr; }

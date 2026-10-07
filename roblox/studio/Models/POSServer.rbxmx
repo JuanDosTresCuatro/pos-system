@@ -1,0 +1,2515 @@
+<roblox version="4">
+  <Item class="Script" referent="0">
+    <Properties>
+      <string name="Name">POSServer</string>
+      <token name="RunContext">0</token>
+      <string name="Source"><![CDATA[-- RoPOS server bootstrap. Order matters: storage first, then data, then the world.
+
+local Services = script.Services
+
+local Store = require(Services.Store)
+local Api = require(Services.Api)
+local Staff = require(Services.Staff)
+local Wallet = require(Services.Wallet)
+local Audit = require(Services.Audit)
+local Catalogue = require(Services.Catalogue)
+local Reports = require(Services.Reports)
+local Sales = require(Services.Sales)
+local Demo = require(Services.Demo)
+local Registers = require(Services.Registers)
+local Checkout = require(Services.Checkout)
+
+Store.init()
+Staff.init()
+Wallet.init()
+Audit.init()
+Catalogue.init()
+Reports.init()
+Sales.init()
+Demo.setup()
+Registers.init()
+Checkout.init()
+require(script.Handlers)
+-- Remotes appear last, so a client never calls an action before its handler exists.
+Api.init(Staff.roleOf)
+Store.start()
+
+print(
+	string.format(
+		"[RoPOS] Ready. %d register(s). Data %s.",
+		#Registers.all(),
+		if Store.persistent then "saved to DataStores" else "in memory only"
+	)
+)
+]]></string>
+    </Properties>
+    <Item class="ModuleScript" referent="1">
+      <Properties>
+        <string name="Name">Handlers</string>
+        <string name="Source"><![CDATA[-- Every client action, in one place. Roles are checked by the router before a handler runs.
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Format = require(Shared.Format)
+local Roles = require(Shared.Roles)
+local Validate = require(Shared.Validate)
+
+local Services = script.Parent.Services
+local Api = require(Services.Api)
+local Audit = require(Services.Audit)
+local Catalogue = require(Services.Catalogue)
+local Checkout = require(Services.Checkout)
+local Registers = require(Services.Registers)
+local Reports = require(Services.Reports)
+local Sales = require(Services.Sales)
+local Shifts = require(Services.Shifts)
+local Staff = require(Services.Staff)
+local Store = require(Services.Store)
+local Wallet = require(Services.Wallet)
+
+local Cashier, Manager, Customer = Roles.Cashier, Roles.Manager, Roles.Customer
+
+local function money(n: number): string
+	return Format.money(n, Config.Currency.Symbol)
+end
+
+local function myRegister(player: Player): Registers.Register
+	local register = Registers.of(player)
+	if not register then
+		Api.fail("Open a register first")
+	end
+	return register
+end
+
+local function product(id: any)
+	local found = typeof(id) == "string" and Catalogue.get(id)
+	if not found then
+		Api.fail("Product not found")
+	end
+	return found
+end
+
+-- Session --------------------------------------------------------------------------------
+
+Api.handle("session.hello", Customer, function(player)
+	local role = Staff.roleOf(player)
+	local register = Registers.of(player)
+	return {
+		role = role,
+		roleName = Roles.name(role),
+		maxDiscount = Staff.maxDiscount(player),
+		persistent = Store.persistent,
+		catalogue = if role >= Cashier then Catalogue.list() else nil,
+		register = if register then Registers.summary(register) else nil,
+	}
+end)
+
+-- Register -------------------------------------------------------------------------------
+
+Api.handle("register.leave", Cashier, function(player)
+	local register = Registers.of(player)
+	if register then
+		Registers.release(register, nil)
+	end
+end)
+
+Api.handle("register.preview", Cashier, function(player, rawCart, rawDiscount)
+	local register = myRegister(player)
+	if register.order then
+		return
+	end
+	local cart = Validate.cart(rawCart, Config.Checkout.MaxLines, Config.Checkout.MaxQty)
+	local pct = math.min(Validate.int(rawDiscount, 0, 100) or 0, Staff.maxDiscount(player))
+	if not cart then
+		register.preview = nil
+	else
+		local ok, totals = pcall(Checkout.price, cart, pct)
+		if ok then
+			local items = 0
+			for _, line in cart do
+				items += line.qty
+			end
+			register.preview = { items = items, total = totals.total }
+		end
+	end
+	Registers.updateDisplay(register)
+end)
+
+Api.handle("register.customers", Cashier, function(player)
+	local register = myRegister(player)
+	local nearby = {}
+	for _, other in game:GetService("Players"):GetPlayers() do
+		local distance = Registers.distance(register, other)
+		if distance <= Config.Checkout.CustomerRange then
+			table.insert(nearby, {
+				userId = other.UserId,
+				name = other.DisplayName,
+				username = other.Name,
+				isYou = other == player,
+				distance = math.floor(distance + 0.5),
+			})
+		end
+	end
+	table.sort(nearby, function(a, b)
+		if a.isYou ~= b.isYou then
+			return not a.isYou
+		end
+		return a.distance < b.distance
+	end)
+	return nearby
+end)
+
+-- Shift ----------------------------------------------------------------------------------
+
+Api.handle("shift.open", Cashier, function(player)
+	local register = myRegister(player)
+	if register.shift then
+		Api.fail("A shift is already open on " .. register.name)
+	end
+	register.shift = Shifts.new(register.id, register.name, player)
+	Audit.log(player, "shift.open", register.name)
+	Registers.updateDisplay(register)
+	return Registers.summary(register)
+end)
+
+Api.handle("shift.report", Cashier, function(player)
+	return Registers.summary(myRegister(player))
+end)
+
+Api.handle("shift.close", Cashier, function(player)
+	local register = myRegister(player)
+	local shift = register.shift
+	if not shift then
+		Api.fail("No shift is open")
+	end
+	if register.order then
+		Api.fail("Finish or cancel the waiting payment first")
+	end
+	local report = Shifts.close(shift, player.Name)
+	register.shift = nil
+	Audit.log(
+		player,
+		"shift.close",
+		string.format("%s: %d sales, net %s", register.name, report.totals.count, money(report.net))
+	)
+	Registers.updateDisplay(register)
+	return report
+end)
+
+-- Checkout -------------------------------------------------------------------------------
+
+Api.handle("checkout.start", Cashier, function(player, cart, discount, customerId)
+	return Checkout.start(player, myRegister(player), cart, discount, customerId)
+end)
+
+Api.handle("checkout.cancel", Cashier, function(player, orderId)
+	Checkout.cancel(player, orderId)
+end)
+
+Api.handle("checkout.respond", Customer, function(player, orderId, accept)
+	return Checkout.respond(player, orderId, accept)
+end)
+
+-- Sales ----------------------------------------------------------------------------------
+
+Api.handle("sales.recent", Cashier, function(_player, limit)
+	return Sales.recent(Validate.int(limit, 1, 200) or 50)
+end)
+
+Api.handle("sales.get", Cashier, function(_player, receipt)
+	local id = Validate.text(receipt, 32)
+	local sale = id and Sales.get(string.upper(id))
+	if not sale then
+		Api.fail("Receipt not found")
+	end
+	return sale
+end)
+
+Api.handle("sales.refund", Manager, function(player, receipt, restock)
+	local id = Validate.text(receipt, 32)
+	local sale = id and Sales.get(id)
+	if not sale then
+		Api.fail("Receipt not found")
+	end
+	if sale.refunded then
+		Api.fail("This sale has already been refunded")
+	end
+	restock = restock == true
+
+	local updated, problem = Sales.markRefunded(sale.receipt, player.Name, restock)
+	if not updated then
+		Api.fail(problem or "Refund failed")
+	end
+	local credited, creditProblem = Wallet.creditUserId(sale.customer.userId, sale.total)
+	if not credited then
+		Sales.unmarkRefunded(sale.receipt)
+		Api.fail(creditProblem or "Could not return the money. Nothing was refunded.")
+	end
+
+	if restock then
+		for _, line in sale.lines do
+			Catalogue.adjustStock(line.productId, line.qty)
+		end
+	end
+	Reports.recordRefund(sale, os.time())
+	local register = Registers.of(player)
+	if register and register.shift then
+		Shifts.recordRefund(register.shift, sale)
+		Registers.refreshOperator(register)
+	end
+	Audit.log(
+		player,
+		"refund",
+		string.format(
+			"%s: %s to %s%s",
+			sale.receipt,
+			money(sale.total),
+			sale.customer.name,
+			if restock then ", restocked" else ""
+		)
+	)
+
+	local customer = game:GetService("Players"):GetPlayerByUserId(sale.customer.userId)
+	if customer then
+		Api.toast(customer, string.format("You were refunded %s for %s", money(sale.total), sale.receipt), "success")
+	end
+	return updated
+end)
+
+-- Products (manager) ---------------------------------------------------------------------
+
+Api.handle("products.price", Manager, function(player, id, price)
+	local item = product(id)
+	local value = Validate.int(price, 0, 1e9)
+	if not value then
+		Api.fail("Enter a whole number price")
+	end
+	if value ~= item.price then
+		Audit.log(player, "product.price", string.format("%s: %s -> %s", item.name, money(item.price), money(value)))
+		Catalogue.setPrice(item.id, value)
+	end
+end)
+
+Api.handle("products.stock", Manager, function(player, id, delta)
+	local item = product(id)
+	local change = Validate.int(delta, -1e6, 1e6)
+	if not change or change == 0 then
+		Api.fail("Invalid stock change")
+	end
+	if item.stock == nil then
+		Api.fail(item.name .. " is not stock-tracked")
+	end
+	Audit.log(player, "stock.adjust", string.format("%s: %+d (was %d)", item.name, change, item.stock))
+	Catalogue.adjustStock(item.id, change)
+end)
+
+Api.handle("products.active", Manager, function(player, id, active)
+	local item = product(id)
+	if typeof(active) ~= "boolean" then
+		Api.fail("Invalid value")
+	end
+	Audit.log(player, "product.active", item.name .. (if active then " on sale" else " taken off sale"))
+	Catalogue.setActive(item.id, active)
+end)
+
+-- Reports and audit (manager) ------------------------------------------------------------
+
+Api.handle("reports.days", Manager, function(_player, count)
+	return Reports.days(Validate.int(count, 1, 14) or 7)
+end)
+
+Api.handle("audit.recent", Manager, function(_player, limit)
+	return Audit.recent(Validate.int(limit, 1, 500) or 100)
+end)
+
+-- Keep every staff screen in step with the catalogue.
+Catalogue.changed:Connect(function()
+	local snapshot = Catalogue.list()
+	Api.pushWhere(Staff.isStaff, "Catalogue", snapshot)
+end)
+
+return {}
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="Folder" referent="2">
+      <Properties>
+        <string name="Name">Services</string>
+      </Properties>
+      <Item class="ModuleScript" referent="3">
+        <Properties>
+          <string name="Name">Api</string>
+          <string name="Source"><![CDATA[-- Request router for the single Api RemoteFunction.
+--
+--   Api.handle("sales.refund", Roles.Manager, function(player, receipt, restock) ... end)
+--
+-- Each request is rate limited per player, checked against the handler's minimum role and run
+-- in a pcall. Handlers report a user-facing problem with Api.fail("message"); any other error
+-- is logged and the client gets a generic message, so internals never leak.
+
+local Players = game:GetService("Players")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Net = require(Shared.Net)
+local Roles = require(Shared.Roles)
+
+local Api = {}
+
+type Handler = { role: number, fn: (Player, ...any) -> any }
+
+local handlers: { [string]: Handler } = {}
+local buckets: { [Player]: { tokens: number, last: number } } = {}
+local remote: RemoteFunction
+local push: RemoteEvent
+local roleOf: (Player) -> number = function(_player)
+	return Roles.Customer
+end
+
+local RATE = 8 -- requests refilled per second
+local BURST = 20
+
+local function allow(player: Player): boolean
+	local now = os.clock()
+	local bucket = buckets[player]
+	if not bucket then
+		bucket = { tokens = BURST, last = now }
+		buckets[player] = bucket
+	end
+	bucket.tokens = math.min(BURST, bucket.tokens + (now - bucket.last) * RATE)
+	bucket.last = now
+	if bucket.tokens < 1 then
+		return false
+	end
+	bucket.tokens -= 1
+	return true
+end
+
+local function dispatch(player: Player, action: any, ...: any)
+	if typeof(action) ~= "string" then
+		return { ok = false, error = "Bad request" }
+	end
+	local handler = handlers[action]
+	if not handler then
+		return { ok = false, error = "Unknown action" }
+	end
+	if not allow(player) then
+		return { ok = false, error = "Slow down a little" }
+	end
+	if roleOf(player) < handler.role then
+		return { ok = false, error = "You don't have permission to do that" }
+	end
+
+	local ok, result = pcall(handler.fn, player, ...)
+	if ok then
+		return { ok = true, data = result }
+	end
+	if typeof(result) == "table" and result.posError then
+		return { ok = false, error = result.posError }
+	end
+	warn(string.format("[RoPOS] %s from %s failed: %s", action, player.Name, tostring(result)))
+	return { ok = false, error = "Something went wrong. Try again." }
+end
+
+function Api.init(resolveRole: (Player) -> number)
+	roleOf = resolveRole
+	remote, push = Net.server()
+	remote.OnServerInvoke = dispatch
+	Players.PlayerRemoving:Connect(function(player)
+		buckets[player] = nil
+	end)
+end
+
+function Api.handle(action: string, minRole: number, fn: (Player, ...any) -> any)
+	assert(handlers[action] == nil, "duplicate handler " .. action)
+	handlers[action] = { role = minRole, fn = fn }
+end
+
+function Api.fail(message: string): never
+	error({ posError = message }, 0)
+end
+
+function Api.push(player: Player, kind: string, payload: any?)
+	if push and player.Parent then
+		push:FireClient(player, kind, payload)
+	end
+end
+
+function Api.pushWhere(predicate: (Player) -> boolean, kind: string, payload: any?)
+	if not push then
+		return
+	end
+	for _, player in Players:GetPlayers() do
+		if predicate(player) then
+			push:FireClient(player, kind, payload)
+		end
+	end
+end
+
+function Api.toast(player: Player, text: string, kind: string?)
+	Api.push(player, "Toast", { text = text, kind = kind or "info" })
+end
+
+return Api
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
+          <string name="Name">Audit</string>
+          <string name="Source"><![CDATA[-- Who did what and when. Entries are batched and merged into one rolling list shared by every
+-- server (newest first, the latest 500 kept).
+
+local Store = require(script.Parent.Store)
+
+local Audit = {}
+
+export type Entry = { t: number, actor: string, userId: number, action: string, detail: string }
+
+local STORE, KEY, KEEP = "Audit", "log", 500
+local CACHE_SECONDS = 15
+
+local pending: { Entry } = {} -- oldest first
+local cached: { Entry } = {}
+local cachedAt = -math.huge
+
+function Audit.log(actor: Player | string, action: string, detail: string?)
+	local isPlayer = typeof(actor) == "Instance"
+	table.insert(pending, {
+		t = os.time(),
+		actor = if isPlayer then (actor :: Player).Name else tostring(actor),
+		userId = if isPlayer then (actor :: Player).UserId else 0,
+		action = action,
+		detail = detail or "",
+	})
+end
+
+function Audit.recent(limit: number): { Entry }
+	if os.clock() - cachedAt > CACHE_SECONDS then
+		local ok, stored = Store.read(STORE, KEY)
+		if ok then
+			cached = stored or {}
+			cachedAt = os.clock()
+		end
+	end
+	local out = {}
+	for i = #pending, 1, -1 do
+		if #out >= limit then
+			return out
+		end
+		table.insert(out, pending[i])
+	end
+	for _, entry in cached do
+		if #out >= limit then
+			break
+		end
+		table.insert(out, entry)
+	end
+	return out
+end
+
+function Audit.init()
+	Store.onFlush("audit", function()
+		if #pending == 0 then
+			return
+		end
+		local batch = pending
+		pending = {}
+		local ok = Store.update(STORE, KEY, function(old)
+			local merged = {}
+			for i = #batch, 1, -1 do
+				table.insert(merged, batch[i])
+			end
+			for _, entry in old or {} do
+				if #merged >= KEEP then
+					break
+				end
+				table.insert(merged, entry)
+			end
+			return merged
+		end)
+		if ok then
+			cachedAt = -math.huge
+		else
+			for i, entry in batch do
+				table.insert(pending, i, entry)
+			end
+		end
+	end)
+end
+
+return Audit
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">Catalogue</string>
+          <string name="Source"><![CDATA[-- Products: fixed details come from Config.Products; price, active flag and stock are saved.
+--
+-- Changes are queued as operations ({ kind = "stock", delta = -2 }) and applied inside an
+-- UpdateAsync transform, so stock sold on several servers at once adds up correctly.
+-- The live view is always: last stored document + operations in flight + operations pending.
+
+local MessagingService = game:GetService("MessagingService")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Signal = require(Shared.Signal)
+local Store = require(script.Parent.Store)
+
+local Catalogue = {}
+Catalogue.changed = Signal.new()
+
+export type Product = {
+	id: string,
+	name: string,
+	category: string,
+	colour: Color3,
+	taxRate: number,
+	tool: string?,
+	price: number,
+	active: boolean,
+	stock: number?, -- nil = not stock-tracked
+}
+
+type Op = { kind: "stock" | "price" | "active", id: string, value: any }
+
+type Doc = { version: number, products: { [string]: { price: number?, active: boolean?, stock: number? } } }
+
+local STORE, KEY, TOPIC = "Catalogue", "products", "RoPOS_Catalogue"
+
+local seeds = {}
+local order: { string } = {}
+local products: { [string]: Product } = {}
+
+local storedDoc: Doc = { version = 0, products = {} }
+local inflight: { Op } = {}
+local pending: { Op } = {}
+local changeQueued = false
+
+for _, seed in Config.Products do
+	assert(seeds[seed.Id] == nil, "Duplicate product id " .. seed.Id)
+	seeds[seed.Id] = seed
+	table.insert(order, seed.Id)
+end
+
+local function applyOp(doc: Doc, op: Op)
+	local seed = seeds[op.id]
+	if not seed then
+		return
+	end
+	local entry = doc.products[op.id]
+	if not entry then
+		entry = {}
+		doc.products[op.id] = entry
+	end
+	if op.kind == "stock" then
+		if seed.Stock ~= nil then
+			entry.stock = math.max(0, (entry.stock or seed.Stock) + op.value)
+		end
+	elseif op.kind == "price" then
+		entry.price = op.value
+	elseif op.kind == "active" then
+		entry.active = op.value
+	end
+end
+
+local function normalise(raw: any): Doc
+	if typeof(raw) ~= "table" or typeof(raw.products) ~= "table" then
+		return { version = 0, products = {} }
+	end
+	return { version = raw.version or 0, products = raw.products }
+end
+
+local function announce()
+	if changeQueued then
+		return
+	end
+	changeQueued = true
+	task.defer(function()
+		changeQueued = false
+		Catalogue.changed:Fire()
+	end)
+end
+
+local function recompute()
+	local view = Store.deepCopy(storedDoc)
+	for _, op in inflight do
+		applyOp(view, op)
+	end
+	for _, op in pending do
+		applyOp(view, op)
+	end
+	for _, id in order do
+		local seed = seeds[id]
+		local saved = view.products[id] or {}
+		products[id] = {
+			id = id,
+			name = seed.Name,
+			category = seed.Category,
+			colour = seed.Colour or Color3.fromRGB(120, 120, 140),
+			taxRate = seed.TaxRate or 0,
+			tool = seed.Tool,
+			price = saved.price or seed.Price,
+			active = if saved.active ~= nil then saved.active else true,
+			stock = if seed.Stock ~= nil then (saved.stock or seed.Stock) else nil,
+		}
+	end
+	announce()
+end
+
+local function queue(op: Op)
+	table.insert(pending, op)
+	recompute()
+end
+
+local function accept(doc: Doc)
+	if doc.version >= storedDoc.version then
+		storedDoc = doc
+		recompute()
+	end
+end
+
+local function flush()
+	if #pending == 0 then
+		return
+	end
+	inflight = pending
+	pending = {}
+	local batch = inflight
+	local ok, stored = Store.update(STORE, KEY, function(old)
+		local doc = normalise(old)
+		for _, op in batch do
+			applyOp(doc, op)
+		end
+		doc.version += 1
+		return doc
+	end)
+	inflight = {}
+	if ok and stored then
+		accept(normalise(stored))
+		pcall(MessagingService.PublishAsync, MessagingService, TOPIC, stored.version)
+	else
+		for i = #batch, 1, -1 do
+			table.insert(pending, 1, batch[i])
+		end
+		recompute()
+	end
+end
+
+local function refresh()
+	local ok, stored = Store.read(STORE, KEY)
+	if ok then
+		accept(normalise(stored))
+	end
+end
+
+function Catalogue.init()
+	refresh()
+	recompute()
+	Store.onFlush("catalogue", flush)
+	task.spawn(function()
+		pcall(MessagingService.SubscribeAsync, MessagingService, TOPIC, function(message)
+			if (tonumber(message.Data) or 0) > storedDoc.version then
+				refresh()
+			end
+		end)
+	end)
+end
+
+function Catalogue.get(id: string): Product?
+	return products[id]
+end
+
+function Catalogue.list(): { Product }
+	local out = {}
+	for _, id in order do
+		table.insert(out, products[id])
+	end
+	return out
+end
+
+function Catalogue.adjustStock(id: string, delta: number)
+	local product = products[id]
+	if product and product.stock ~= nil and delta ~= 0 then
+		queue({ kind = "stock", id = id, value = delta })
+	end
+end
+
+function Catalogue.setPrice(id: string, price: number)
+	queue({ kind = "price", id = id, value = price })
+end
+
+function Catalogue.setActive(id: string, active: boolean)
+	queue({ kind = "active", id = id, value = active })
+end
+
+return Catalogue
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="6">
+        <Properties>
+          <string name="Name">Checkout</string>
+          <string name="Source"><![CDATA[-- The payment handshake.
+--
+--   1. Cashier sends the cart. Server validates it, prices it from the live catalogue and sends
+--      the customer a PaymentRequest.
+--   2. Customer approves or declines on their own screen (or the request times out).
+--   3. On approval the server re-prices, debits the wallet and takes the stock in one step with
+--      no yields, then records the sale, hands over the items and sends both players the receipt.
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ServerStorage = game:GetService("ServerStorage")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Format = require(Shared.Format)
+local Pricing = require(Shared.Pricing)
+local Validate = require(Shared.Validate)
+local Api = require(script.Parent.Api)
+local Audit = require(script.Parent.Audit)
+local Catalogue = require(script.Parent.Catalogue)
+local Registers = require(script.Parent.Registers)
+local Sales = require(script.Parent.Sales)
+local Shifts = require(script.Parent.Shifts)
+local Staff = require(script.Parent.Staff)
+local Wallet = require(script.Parent.Wallet)
+
+local Checkout = {}
+
+export type Order = {
+	id: string,
+	register: Registers.Register,
+	operator: Player,
+	customer: Player,
+	cart: { Validate.CartLine },
+	discountPct: number,
+	totals: Pricing.Totals,
+	status: "pending" | "paid" | "declined" | "expired" | "cancelled",
+	expiresAt: number,
+}
+
+local orders: { [string]: Order } = {}
+local byCustomer: { [Player]: Order } = {}
+
+local function money(n: number): string
+	return Format.money(n, Config.Currency.Symbol)
+end
+
+local function selfCheckoutAllowed(): boolean
+	local setting = Config.Checkout.AllowSelfCheckout
+	if setting == "Studio" then
+		return RunService:IsStudio()
+	end
+	return setting == true
+end
+
+-- Prices a validated cart from the live catalogue, or fails with a reason the cashier can act on.
+function Checkout.price(cart: { Validate.CartLine }, discountPct: number): Pricing.Totals
+	local lines: { Pricing.Line } = {}
+	for _, line in cart do
+		local product = Catalogue.get(line.productId)
+		if not product or not product.active then
+			Api.fail((if product then product.name else "An item") .. " is not available any more")
+		end
+		if product.stock ~= nil and line.qty > product.stock then
+			Api.fail(
+				if product.stock == 0
+					then product.name .. " is sold out"
+					else string.format("Only %d %s left", product.stock, product.name)
+			)
+		end
+		table.insert(lines, {
+			productId = product.id,
+			name = product.name,
+			unitPrice = product.price,
+			qty = line.qty,
+			taxRate = if Config.Tax.Enabled then product.taxRate else 0,
+		})
+	end
+	return Pricing.priceLines(lines, { discountPct = discountPct, taxInclusive = Config.Tax.Inclusive })
+end
+
+-- What the customer's screen shows.
+local function describe(order: Order)
+	return {
+		id = order.id,
+		registerName = order.register.name,
+		cashier = order.operator.DisplayName,
+		lines = order.totals.lines,
+		subtotal = order.totals.subtotal,
+		discount = order.totals.discount,
+		discountPct = order.discountPct,
+		tax = order.totals.tax,
+		total = order.totals.total,
+		timeout = math.max(0, order.expiresAt - os.clock()),
+	}
+end
+
+local function detach(order: Order)
+	orders[order.id] = nil
+	if byCustomer[order.customer] == order then
+		byCustomer[order.customer] = nil
+	end
+	if order.register.order == order then
+		order.register.order = nil
+	end
+end
+
+local function finish(order: Order, status, reason: string)
+	if order.status ~= "pending" then
+		return
+	end
+	order.status = status
+	detach(order)
+	Api.push(order.operator, "OrderUpdate", { orderId = order.id, status = status, reason = reason })
+	Api.push(order.customer, "PaymentClosed", { orderId = order.id, reason = reason })
+	Registers.updateDisplay(order.register)
+end
+
+function Checkout.start(player: Player, register: Registers.Register, rawCart: any, rawDiscount: any, rawCustomer: any)
+	if not register.shift then
+		Api.fail("Open a shift before taking payments")
+	end
+	if register.order then
+		Api.fail("This register is already waiting for a payment")
+	end
+
+	local cart, problem = Validate.cart(rawCart, Config.Checkout.MaxLines, Config.Checkout.MaxQty)
+	if not cart then
+		Api.fail(problem or "Invalid order")
+	end
+	local discountPct = Validate.int(rawDiscount, 0, 100)
+	if not discountPct then
+		Api.fail("Invalid discount")
+	end
+	if discountPct > Staff.maxDiscount(player) then
+		Api.fail(string.format("Your discount limit is %d%%", Staff.maxDiscount(player)))
+	end
+
+	local customerId = Validate.int(rawCustomer, -1e15, 1e15)
+	local customer = customerId and Players:GetPlayerByUserId(customerId)
+	if not customer then
+		Api.fail("Choose a customer")
+	end
+	if customer == player and not selfCheckoutAllowed() then
+		Api.fail("You can't ring up your own order")
+	end
+	if Registers.distance(register, customer) > Config.Checkout.CustomerRange then
+		Api.fail(customer.DisplayName .. " needs to stand at the register")
+	end
+	if byCustomer[customer] then
+		Api.fail(customer.DisplayName .. " already has a payment waiting")
+	end
+	if not Wallet.ready(customer) then
+		Api.fail(customer.DisplayName .. "'s wallet is still loading")
+	end
+
+	local totals = Checkout.price(cart, discountPct)
+	local timeout = Config.Checkout.PaymentTimeout
+	local order: Order = {
+		id = HttpService:GenerateGUID(false),
+		register = register,
+		operator = player,
+		customer = customer,
+		cart = cart,
+		discountPct = discountPct,
+		totals = totals,
+		status = "pending",
+		expiresAt = os.clock() + timeout,
+	}
+	orders[order.id] = order
+	byCustomer[customer] = order
+	register.order = order
+
+	Api.push(customer, "PaymentRequest", describe(order))
+	Registers.updateDisplay(register)
+
+	task.delay(timeout, function()
+		finish(order, "expired", customer.DisplayName .. " did not respond in time")
+	end)
+
+	return { orderId = order.id, timeout = timeout, total = totals.total, customer = customer.DisplayName }
+end
+
+function Checkout.cancel(player: Player, orderId: any)
+	local order = typeof(orderId) == "string" and orders[orderId]
+	if not order or order.operator ~= player then
+		Api.fail("That payment is no longer waiting")
+	end
+	finish(order, "cancelled", "The cashier cancelled the payment")
+end
+
+local function giveItems(customer: Player, lines: { Pricing.PricedLine })
+	if not Config.Checkout.GiveItems then
+		return
+	end
+	local folder = ServerStorage:FindFirstChild("POSItems")
+	local backpack = customer:FindFirstChildOfClass("Backpack")
+	if not folder or not backpack then
+		return
+	end
+	for _, line in lines do
+		local product = Catalogue.get(line.productId)
+		local template = product and product.tool and folder:FindFirstChild(product.tool)
+		if template and template:IsA("Tool") then
+			for _ = 1, line.qty do
+				template:Clone().Parent = backpack
+			end
+		end
+	end
+end
+
+function Checkout.respond(customer: Player, orderId: any, accept: any)
+	local order = typeof(orderId) == "string" and orders[orderId]
+	if not order or order.customer ~= customer or order.status ~= "pending" then
+		Api.fail("This payment is no longer available")
+	end
+	if accept ~= true then
+		finish(order, "declined", customer.DisplayName .. " declined the payment")
+		return { status = "declined" }
+	end
+
+	-- Prices or stock may have changed since the request. Never charge a different amount.
+	local ok, repriced = pcall(Checkout.price, order.cart, order.discountPct)
+	if not ok or repriced.total ~= order.totals.total then
+		finish(order, "cancelled", "Prices or stock changed. Ring up the order again.")
+		Api.fail("Prices or stock changed. The cashier needs to ring this up again.")
+	end
+
+	-- From here to the end of the stock loop nothing yields, so the debit and stock are atomic.
+	if not Wallet.tryDebit(customer, order.totals.total) then
+		Api.fail("You don't have enough " .. Config.Currency.StatName)
+	end
+	order.status = "paid"
+	detach(order)
+	for _, line in order.totals.lines do
+		Catalogue.adjustStock(line.productId, -line.qty)
+	end
+
+	local register = order.register
+	local operator = order.operator
+	local commission = math.floor(order.totals.total * Config.Payouts.CashierCommissionPct / 100)
+	if commission > 0 and operator ~= customer and operator.Parent then
+		Wallet.credit(operator, commission)
+	end
+
+	local saleLines = {}
+	for _, line in order.totals.lines do
+		table.insert(saleLines, {
+			productId = line.productId,
+			name = line.name or line.productId,
+			qty = line.qty,
+			unitPrice = line.unitPrice,
+			discount = line.discount,
+			tax = line.tax,
+			total = line.total,
+		})
+	end
+	local sale: Sales.Sale = {
+		receipt = "",
+		t = os.time(),
+		registerId = register.id,
+		registerName = register.name,
+		shiftId = if register.shift then register.shift.id else nil,
+		cashier = { userId = operator.UserId, name = operator.DisplayName },
+		customer = { userId = customer.UserId, name = customer.DisplayName },
+		lines = saleLines,
+		discountPct = order.discountPct,
+		subtotal = order.totals.subtotal,
+		discount = order.totals.discount,
+		tax = order.totals.tax,
+		total = order.totals.total,
+		refunded = nil,
+	}
+	if register.shift then
+		Shifts.recordSale(register.shift, sale)
+	end
+	giveItems(customer, order.totals.lines)
+	Registers.flashPaid(register)
+
+	Sales.record(sale) -- yields for the receipt number
+	if order.discountPct > 0 then
+		Audit.log(
+			operator,
+			"discount",
+			string.format("%s: %d%% (%s off)", sale.receipt, order.discountPct, money(sale.discount))
+		)
+	end
+	Audit.log(operator, "sale", string.format("%s: %s to %s", sale.receipt, money(sale.total), customer.Name))
+
+	Api.push(operator, "OrderUpdate", { orderId = order.id, status = "paid", sale = sale })
+	Api.push(customer, "Receipt", sale)
+	Registers.refreshOperator(register)
+	return { status = "paid", receipt = sale.receipt }
+end
+
+function Checkout.init()
+	Registers.released:Connect(function(register, reason)
+		if register.order then
+			finish(register.order, "cancelled", reason)
+		end
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		local order = byCustomer[player]
+		if order then
+			finish(order, "cancelled", player.DisplayName .. " left the game")
+		end
+	end)
+end
+
+return Checkout
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="7">
+        <Properties>
+          <string name="Name">Demo</string>
+          <string name="Source"><![CDATA[-- Builds a shop counter with a register when the place has none, and simple item Tools for
+-- products that have no Tool in ServerStorage.POSItems. Turn both off in Config.Demo.
+
+local CollectionService = game:GetService("CollectionService")
+local ServerStorage = game:GetService("ServerStorage")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+
+local Demo = {}
+
+local function part(parent: Instance, props: { [string]: any }): Part
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	for key, value in props do
+		(p :: any)[key] = value
+	end
+	p.Parent = parent
+	return p
+end
+
+local function groundY(x: number, z: number): number
+	local result = workspace:Raycast(Vector3.new(x, 500, z), Vector3.new(0, -1000, 0))
+	return if result then result.Position.Y else 0
+end
+
+local function sign(parent: Instance, text: string, cframe: CFrame)
+	local board = part(parent, {
+		Name = "Sign",
+		Size = Vector3.new(8, 1.6, 0.3),
+		CFrame = cframe,
+		Color = Color3.fromRGB(22, 25, 33),
+		Material = Enum.Material.SmoothPlastic,
+		CanCollide = false,
+	})
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 60
+	gui.LightInfluence = 0
+	gui.Brightness = 2
+	local textLabel = Instance.new("TextLabel")
+	textLabel.Size = UDim2.fromScale(1, 1)
+	textLabel.BackgroundTransparency = 1
+	textLabel.Text = text
+	textLabel.TextScaled = true
+	textLabel.TextColor3 = Color3.fromRGB(255, 214, 153)
+	textLabel.FontFace = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Bold)
+	local padding = Instance.new("UIPadding")
+	padding.PaddingTop = UDim.new(0.18, 0)
+	padding.PaddingBottom = UDim.new(0.18, 0)
+	padding.Parent = textLabel
+	textLabel.Parent = gui
+	gui.Parent = board
+end
+
+function Demo.buildCounter()
+	local origin = Vector3.new(0, 0, -26)
+	local y = groundY(origin.X, origin.Z)
+	-- Customers stand on the +Z side, staff behind the counter on the -Z side.
+	local base = CFrame.new(origin.X, y, origin.Z)
+
+	local model = Instance.new("Model")
+	model.Name = "RoPOS Counter"
+
+	part(model, {
+		Name = "Counter",
+		Size = Vector3.new(16, 3.6, 3),
+		CFrame = base * CFrame.new(0, 1.8, 0),
+		Color = Color3.fromRGB(110, 76, 52),
+		Material = Enum.Material.WoodPlanks,
+	})
+	part(model, {
+		Name = "Top",
+		Size = Vector3.new(16.6, 0.3, 3.6),
+		CFrame = base * CFrame.new(0, 3.75, 0),
+		Color = Color3.fromRGB(235, 232, 226),
+		Material = Enum.Material.Marble,
+	})
+	local till = part(model, {
+		Name = "Till",
+		Size = Vector3.new(2.4, 0.7, 1.8),
+		CFrame = base * CFrame.new(-3, 4.25, -0.2),
+		Color = Color3.fromRGB(30, 34, 45),
+		Material = Enum.Material.SmoothPlastic,
+	})
+	part(model, {
+		Name = "Stand",
+		Size = Vector3.new(0.3, 1.1, 0.3),
+		CFrame = base * CFrame.new(-3, 5.15, -0.3),
+		Color = Color3.fromRGB(45, 50, 64),
+		Material = Enum.Material.Metal,
+	})
+	-- Tilted towards the customer. A part's front face points along its LookVector.
+	local screenPos = (base * CFrame.new(-3, 6.2, -0.15)).Position
+	part(model, {
+		Name = "Screen",
+		Size = Vector3.new(2.6, 1.6, 0.15),
+		CFrame = CFrame.lookAt(screenPos, screenPos + Vector3.new(0, 0.25, 1)),
+		Color = Color3.fromRGB(10, 10, 12),
+		Material = Enum.Material.Glass,
+	})
+	part(model, {
+		Name = "CardReader",
+		Size = Vector3.new(0.6, 0.15, 0.9),
+		CFrame = base * CFrame.new(-1.2, 3.98, 0.9) * CFrame.Angles(math.rad(-15), 0, 0),
+		Color = Color3.fromRGB(45, 50, 64),
+		Material = Enum.Material.SmoothPlastic,
+	})
+	part(model, {
+		Name = "TipJar",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(1.1, 0.8, 0.8),
+		CFrame = base * CFrame.new(1.5, 4.45, 0.8) * CFrame.Angles(0, 0, math.rad(90)),
+		Color = Color3.fromRGB(200, 230, 255),
+		Material = Enum.Material.Glass,
+		Transparency = 0.4,
+	})
+
+	-- A menu board above the counter, readable from the customer side.
+	sign(model, "BLOX MART  🛒", base * CFrame.new(0, 9.5, 0) * CFrame.Angles(0, math.pi, 0))
+	part(model, {
+		Name = "SignPost",
+		Size = Vector3.new(0.3, 5.5, 0.3),
+		CFrame = base * CFrame.new(-7.5, 6.5, 0),
+		Color = Color3.fromRGB(45, 50, 64),
+		Material = Enum.Material.Metal,
+	})
+	part(model, {
+		Name = "SignPost",
+		Size = Vector3.new(0.3, 5.5, 0.3),
+		CFrame = base * CFrame.new(7.5, 6.5, 0),
+		Color = Color3.fromRGB(45, 50, 64),
+		Material = Enum.Material.Metal,
+	})
+
+	model.PrimaryPart = till
+	model:SetAttribute("RegisterId", "R1")
+	model:SetAttribute("RegisterName", "Front Counter")
+	model.Parent = workspace
+	CollectionService:AddTag(model, Config.RegisterTag)
+end
+
+local function buildTool(name: string, colour: Color3): Tool
+	local tool = Instance.new("Tool")
+	tool.Name = name
+	tool.ToolTip = name
+	tool.CanBeDropped = false
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.8, 1.1, 0.8)
+	handle.Color = colour
+	handle.Material = Enum.Material.SmoothPlastic
+	handle.TopSurface = Enum.SurfaceType.Smooth
+	handle.BottomSurface = Enum.SurfaceType.Smooth
+	handle.Massless = true
+	handle.Parent = tool
+	return tool
+end
+
+function Demo.ensureItems()
+	local folder = ServerStorage:FindFirstChild("POSItems")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "POSItems"
+		folder.Parent = ServerStorage
+	end
+	for _, product in Config.Products do
+		if product.Tool and not folder:FindFirstChild(product.Tool) then
+			buildTool(product.Tool, product.Colour or Color3.new(1, 1, 1)).Parent = folder
+		end
+	end
+end
+
+function Demo.setup()
+	if Config.Demo.SpawnRegister and #CollectionService:GetTagged(Config.RegisterTag) == 0 then
+		Demo.buildCounter()
+	end
+	if Config.Demo.CreateItemTools then
+		Demo.ensureItems()
+	end
+end
+
+return Demo
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="8">
+        <Properties>
+          <string name="Name">Registers</string>
+          <string name="Source"><![CDATA[-- Physical registers. Tag any Model or BasePart with "POSRegister" (CollectionService) and it
+-- becomes a working till with a ProximityPrompt and a customer-facing screen.
+--
+-- Optional attributes on the tagged instance:
+--   RegisterId   (string) stable id, generated if missing
+--   RegisterName (string) shown to staff and customers
+-- Optional child: a BasePart named "Screen" for the customer display (front face).
+
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Format = require(Shared.Format)
+local Signal = require(Shared.Signal)
+local Api = require(script.Parent.Api)
+local Staff = require(script.Parent.Staff)
+local Shifts = require(script.Parent.Shifts)
+
+local Registers = {}
+Registers.released = Signal.new() -- (register, reason)
+
+export type Display = {
+	status: TextLabel,
+	detail: TextLabel,
+	total: TextLabel,
+	accent: Frame,
+}
+
+export type Register = {
+	id: string,
+	name: string,
+	instance: Instance,
+	anchor: BasePart,
+	prompt: ProximityPrompt,
+	display: Display?,
+	operator: Player?,
+	shift: Shifts.Shift?,
+	order: any?, -- the pending Checkout order, if any
+	preview: { items: number, total: number }?,
+	flashUntil: number,
+}
+
+local registers: { [string]: Register } = {}
+local byInstance: { [Instance]: Register } = {}
+local byOperator: { [Player]: Register } = {}
+local count = 0
+
+local COLOURS = {
+	idle = Color3.fromRGB(88, 130, 255),
+	busy = Color3.fromRGB(242, 173, 61),
+	paid = Color3.fromRGB(46, 204, 113),
+	closed = Color3.fromRGB(110, 116, 135),
+}
+
+local function money(n: number): string
+	return Format.money(n, Config.Currency.Symbol)
+end
+
+local function label(parent: Instance, props: { [string]: any }): TextLabel
+	local text = Instance.new("TextLabel")
+	text.BackgroundTransparency = 1
+	text.TextColor3 = Color3.fromRGB(236, 239, 245)
+	text.TextScaled = true
+	text.FontFace = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Bold)
+	for key, value in props do
+		(text :: any)[key] = value
+	end
+	text.Parent = parent
+	return text
+end
+
+local function buildDisplay(register: Register): Display?
+	local screen = register.instance:FindFirstChild("Screen", true)
+	local part = if screen and screen:IsA("BasePart") then screen else nil
+	local gui: LayerCollector
+	if part then
+		local surface = Instance.new("SurfaceGui")
+		surface.Face = Enum.NormalId.Front
+		surface.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		surface.PixelsPerStud = 120
+		surface.LightInfluence = 0
+		surface.Brightness = 1.6
+		surface.Adornee = part
+		gui = surface
+	else
+		local board = Instance.new("BillboardGui")
+		board.Size = UDim2.fromScale(5, 2.6)
+		board.StudsOffsetWorldSpace = Vector3.new(0, 3.5, 0)
+		board.MaxDistance = 60
+		board.Adornee = register.anchor
+		gui = board
+	end
+	gui.Name = "RoPOSDisplay"
+
+	local root = Instance.new("Frame")
+	root.Size = UDim2.fromScale(1, 1)
+	root.BackgroundColor3 = Color3.fromRGB(13, 15, 20)
+	root.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0.06, 0)
+	corner.Parent = root
+
+	local accent = Instance.new("Frame")
+	accent.Size = UDim2.fromScale(1, 0.05)
+	accent.BorderSizePixel = 0
+	accent.BackgroundColor3 = COLOURS.closed
+	accent.Parent = root
+
+	label(root, {
+		Name = "Store",
+		Size = UDim2.fromScale(0.9, 0.13),
+		Position = UDim2.fromScale(0.05, 0.1),
+		Text = string.upper(Config.Store.Name),
+		TextColor3 = Color3.fromRGB(146, 153, 170),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local status = label(root, {
+		Name = "Status",
+		Size = UDim2.fromScale(0.9, 0.24),
+		Position = UDim2.fromScale(0.05, 0.27),
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local detail = label(root, {
+		Name = "Detail",
+		Size = UDim2.fromScale(0.9, 0.13),
+		Position = UDim2.fromScale(0.05, 0.53),
+		TextColor3 = Color3.fromRGB(146, 153, 170),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		FontFace = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Medium),
+	})
+	local total = label(root, {
+		Name = "Total",
+		Size = UDim2.fromScale(0.9, 0.24),
+		Position = UDim2.fromScale(0.05, 0.7),
+		TextXAlignment = Enum.TextXAlignment.Right,
+		FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json", Enum.FontWeight.Bold),
+	})
+
+	gui.Parent = part or register.anchor
+	return { status = status, detail = detail, total = total, accent = accent }
+end
+
+function Registers.updateDisplay(register: Register)
+	local display = register.display
+	local operator = register.operator
+	register.prompt.ObjectText = if operator then register.name .. " · " .. operator.DisplayName else register.name
+	if not display then
+		return
+	end
+
+	local status, detail, total, colour
+	if os.clock() < register.flashUntil then
+		status, detail, total, colour = "Thank you!", "Payment approved", "✓", COLOURS.paid
+	elseif register.order then
+		status = "Please approve"
+		detail = "Waiting for " .. register.order.customer.DisplayName
+		total, colour = money(register.order.totals.total), COLOURS.busy
+	elseif operator and register.preview and register.preview.items > 0 then
+		status = string.format("%d item%s", register.preview.items, if register.preview.items == 1 then "" else "s")
+		detail = "Served by " .. operator.DisplayName
+		total, colour = money(register.preview.total), COLOURS.idle
+	elseif operator and register.shift then
+		status, detail, total, colour = "Welcome!", operator.DisplayName .. " can take your order", "", COLOURS.idle
+	elseif register.shift then
+		status, detail, total, colour = "Back soon", "Waiting for a cashier", "", COLOURS.closed
+	else
+		status, detail, total, colour = "Closed", register.name, "", COLOURS.closed
+	end
+
+	display.status.Text = status
+	display.detail.Text = detail
+	display.total.Text = total
+	TweenService:Create(display.accent, TweenInfo.new(0.35), { BackgroundColor3 = colour }):Play()
+end
+
+function Registers.flashPaid(register: Register)
+	register.flashUntil = os.clock() + 4
+	register.preview = nil
+	Registers.updateDisplay(register)
+	task.delay(4.1, Registers.updateDisplay, register)
+end
+
+function Registers.summary(register: Register)
+	return {
+		id = register.id,
+		name = register.name,
+		shift = if register.shift then Shifts.report(register.shift) else nil,
+	}
+end
+
+function Registers.distance(register: Register, player: Player): number
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root or not root:IsA("BasePart") then
+		return math.huge
+	end
+	return (root.Position - register.anchor.Position).Magnitude
+end
+
+function Registers.of(player: Player): Register?
+	return byOperator[player]
+end
+
+function Registers.get(id: string): Register?
+	return registers[id]
+end
+
+function Registers.release(register: Register, reason: string?)
+	local operator = register.operator
+	if not operator then
+		return
+	end
+	Registers.released:Fire(register, reason or "The register was closed")
+	register.operator = nil
+	register.preview = nil
+	byOperator[operator] = nil
+	Api.push(operator, "CloseRegister", { id = register.id, reason = reason })
+	Registers.updateDisplay(register)
+end
+
+function Registers.claim(register: Register, player: Player)
+	if not Staff.isStaff(player) then
+		Api.toast(player, "Only staff can use the register", "warning")
+		return
+	end
+	if register.operator and register.operator ~= player then
+		Api.toast(player, register.name .. " is being used by " .. register.operator.DisplayName, "warning")
+		return
+	end
+	local current = byOperator[player]
+	if current and current ~= register then
+		Registers.release(current, "You moved to " .. register.name)
+	end
+	register.operator = player
+	byOperator[player] = register
+	Api.push(player, "OpenRegister", Registers.summary(register))
+	Registers.updateDisplay(register)
+end
+
+-- Pushes fresh register details (shift totals) to the operator.
+function Registers.refreshOperator(register: Register)
+	if register.operator then
+		Api.push(register.operator, "Register", Registers.summary(register))
+	end
+end
+
+local function findAnchor(instance: Instance): BasePart?
+	if instance:IsA("BasePart") then
+		return instance
+	elseif instance:IsA("Model") and instance.PrimaryPart then
+		return instance.PrimaryPart
+	end
+	return instance:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function add(instance: Instance)
+	if byInstance[instance] then
+		return
+	end
+	local anchor = findAnchor(instance)
+	if not anchor then
+		warn("[RoPOS] " .. instance:GetFullName() .. " is tagged " .. Config.RegisterTag .. " but has no parts")
+		return
+	end
+
+	count += 1
+	local id = instance:GetAttribute("RegisterId")
+	if typeof(id) ~= "string" or id == "" or registers[id] then
+		id = "R" .. count
+		instance:SetAttribute("RegisterId", id)
+	end
+	local name = instance:GetAttribute("RegisterName")
+	if typeof(name) ~= "string" or name == "" then
+		name = "Register " .. count
+	end
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "RoPOSPrompt"
+	prompt.ActionText = "Use register"
+	prompt.ObjectText = name
+	prompt.HoldDuration = 0.25
+	prompt.MaxActivationDistance = 9
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = anchor
+
+	local register: Register = {
+		id = id,
+		name = name,
+		instance = instance,
+		anchor = anchor,
+		prompt = prompt,
+		display = nil,
+		operator = nil,
+		shift = nil,
+		order = nil,
+		preview = nil,
+		flashUntil = 0,
+	}
+	register.display = buildDisplay(register)
+	registers[id] = register
+	byInstance[instance] = register
+
+	prompt.Triggered:Connect(function(player)
+		Registers.claim(register, player)
+	end)
+	Registers.updateDisplay(register)
+end
+
+local function remove(instance: Instance)
+	local register = byInstance[instance]
+	if not register then
+		return
+	end
+	Registers.release(register, "The register was removed")
+	register.prompt:Destroy()
+	byInstance[instance] = nil
+	registers[register.id] = nil
+end
+
+function Registers.all(): { Register }
+	local out = {}
+	for _, register in registers do
+		table.insert(out, register)
+	end
+	return out
+end
+
+function Registers.init()
+	for _, instance in CollectionService:GetTagged(Config.RegisterTag) do
+		add(instance)
+	end
+	CollectionService:GetInstanceAddedSignal(Config.RegisterTag):Connect(add)
+	CollectionService:GetInstanceRemovedSignal(Config.RegisterTag):Connect(remove)
+
+	Players.PlayerRemoving:Connect(function(player)
+		local register = byOperator[player]
+		if register then
+			Registers.release(register, "The cashier left")
+		end
+	end)
+
+	-- Sign the cashier out when they walk away.
+	task.spawn(function()
+		while true do
+			task.wait(1)
+			for _, register in registers do
+				local operator = register.operator
+				if operator and Registers.distance(register, operator) > Config.Checkout.OperatorRange then
+					Registers.release(register, "You walked away from " .. register.name)
+				end
+			end
+		end
+	end)
+end
+
+return Registers
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="9">
+        <Properties>
+          <string name="Name">Reports</string>
+          <string name="Source"><![CDATA[-- Daily totals (UTC days) shared across servers. Each server keeps a delta per day and merges
+-- it into the stored total on flush.
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Aggregate = require(Shared.Aggregate)
+local Format = require(Shared.Format)
+local Store = require(script.Parent.Store)
+
+local Reports = {}
+
+local STORE = "Reports"
+local CACHE_SECONDS = 20
+local DAY = 86400
+
+local pending: { [string]: Aggregate.Aggregate } = {}
+local inflight: { [string]: Aggregate.Aggregate } = {}
+local cache: { [string]: { at: number, agg: Aggregate.Aggregate } } = {}
+
+local function delta(t: number): Aggregate.Aggregate
+	local day = Format.dayKey(t)
+	local agg = pending[day]
+	if not agg then
+		agg = Aggregate.new()
+		pending[day] = agg
+	end
+	return agg
+end
+
+function Reports.recordSale(sale)
+	Aggregate.addSale(delta(sale.t), sale)
+end
+
+function Reports.recordRefund(sale, t: number)
+	Aggregate.addRefund(delta(t), sale)
+end
+
+local function stored(day: string): Aggregate.Aggregate
+	local hit = cache[day]
+	if hit and os.clock() - hit.at < CACHE_SECONDS then
+		return hit.agg
+	end
+	local ok, raw = Store.read(STORE, "d/" .. day)
+	if not ok then
+		return if hit then hit.agg else Aggregate.new()
+	end
+	local agg = Aggregate.normalise(raw)
+	cache[day] = { at = os.clock(), agg = agg }
+	return agg
+end
+
+export type Day = { day: string, label: string, totals: Aggregate.Aggregate }
+
+-- The last `count` days, oldest first, including changes not saved yet.
+function Reports.days(count: number): { Day }
+	local now = os.time()
+	local out: { Day } = {}
+	local loaded = {}
+	local remaining = count
+	local waiting = false
+
+	-- Read the days in parallel; each read can take a moment.
+	local thread = coroutine.running()
+	for i = count - 1, 0, -1 do
+		local t = now - i * DAY
+		task.spawn(function()
+			loaded[i] = stored(Format.dayKey(t))
+			remaining -= 1
+			if remaining == 0 and waiting then
+				task.spawn(thread)
+			end
+		end)
+	end
+	if remaining > 0 then
+		waiting = true
+		coroutine.yield()
+	end
+
+	for i = count - 1, 0, -1 do
+		local t = now - i * DAY
+		local day = Format.dayKey(t)
+		local totals = Aggregate.merge(Aggregate.normalise(loaded[i]), inflight[day] or Aggregate.new())
+		Aggregate.merge(totals, pending[day] or Aggregate.new())
+		table.insert(out, { day = day, label = if i == 0 then "Today" else Format.weekday(t), totals = totals })
+	end
+	return out
+end
+
+function Reports.init()
+	Store.onFlush("reports", function()
+		if next(pending) == nil then
+			return
+		end
+		inflight = pending
+		pending = {}
+		for day, agg in inflight do
+			local ok = Store.update(STORE, "d/" .. day, function(old)
+				return Aggregate.merge(Aggregate.normalise(old), agg)
+			end)
+			if ok then
+				cache[day] = nil
+			else
+				pending[day] = Aggregate.merge(pending[day] or Aggregate.new(), agg)
+			end
+			inflight[day] = nil
+		end
+	end)
+end
+
+return Reports
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="10">
+        <Properties>
+          <string name="Name">Sales</string>
+          <string name="Source"><![CDATA[-- Receipts. Each sale is its own DataStore key ("s/BM-000042"); a rolling list of the latest
+-- 200 summaries is shared by every server for the Sales screen.
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Format = require(Shared.Format)
+local Store = require(script.Parent.Store)
+local Reports = require(script.Parent.Reports)
+
+local Sales = {}
+
+export type SaleLine = {
+	productId: string,
+	name: string,
+	qty: number,
+	unitPrice: number,
+	discount: number,
+	tax: number,
+	total: number,
+}
+
+export type Sale = {
+	receipt: string,
+	t: number,
+	registerId: string,
+	registerName: string,
+	shiftId: string?,
+	cashier: { userId: number, name: string },
+	customer: { userId: number, name: string },
+	lines: { SaleLine },
+	discountPct: number,
+	subtotal: number,
+	discount: number,
+	tax: number,
+	total: number,
+	refunded: { t: number, by: string, restocked: boolean }?,
+}
+
+export type Summary = {
+	receipt: string,
+	t: number,
+	cashier: string,
+	customer: string,
+	items: number,
+	total: number,
+	refunded: boolean,
+}
+
+local STORE = "Sales"
+local KEEP = 200
+local CACHE_SECONDS = 15
+
+local cache: { [string]: Sale } = {}
+local pendingSummaries: { Summary } = {} -- oldest first
+local pendingRefunds: { [string]: boolean } = {}
+local storedRecent: { Summary } = {}
+local storedAt = -math.huge
+local fallbackCounter = 0
+
+local function summarise(sale: Sale): Summary
+	local items = 0
+	for _, line in sale.lines do
+		items += line.qty
+	end
+	return {
+		receipt = sale.receipt,
+		t = sale.t,
+		cashier = sale.cashier.name,
+		customer = sale.customer.name,
+		items = items,
+		total = sale.total,
+		refunded = sale.refunded ~= nil,
+	}
+end
+
+local function nextReceipt(): string
+	local ok, n = Store.update(STORE, "counter", function(old)
+		return (old or 0) + 1
+	end)
+	if ok and typeof(n) == "number" then
+		return Format.receipt(Config.Store.ReceiptPrefix, n)
+	end
+	-- The counter is unreachable: use a time-based number that cannot clash with it.
+	fallbackCounter += 1
+	return string.format("%s-T%d%02d", Config.Store.ReceiptPrefix, os.time(), fallbackCounter % 100)
+end
+
+-- Yields while the receipt number is reserved. Fills in sale.receipt.
+function Sales.record(sale: Sale): Sale
+	sale.receipt = nextReceipt()
+	cache[sale.receipt] = sale
+	table.insert(pendingSummaries, summarise(sale))
+	Reports.recordSale(sale)
+	task.spawn(Store.update, STORE, "s/" .. sale.receipt, function()
+		return sale
+	end)
+	return sale
+end
+
+function Sales.get(receipt: string): Sale?
+	local hit = cache[receipt]
+	if hit then
+		return hit
+	end
+	local ok, stored = Store.read(STORE, "s/" .. receipt)
+	if ok and stored then
+		cache[receipt] = stored
+		return stored
+	end
+	return nil
+end
+
+function Sales.recent(limit: number): { Summary }
+	if os.clock() - storedAt > CACHE_SECONDS then
+		local ok, stored = Store.read(STORE, "recent")
+		if ok then
+			storedRecent = stored or {}
+			storedAt = os.clock()
+		end
+	end
+	local out, seen = {}, {}
+	local function add(summary: Summary)
+		if #out < limit and not seen[summary.receipt] then
+			seen[summary.receipt] = true
+			local copy = table.clone(summary)
+			copy.refunded = copy.refunded
+				or pendingRefunds[copy.receipt] == true
+				or (cache[copy.receipt] and cache[copy.receipt].refunded ~= nil)
+				or false
+			table.insert(out, copy)
+		end
+	end
+	for i = #pendingSummaries, 1, -1 do
+		add(pendingSummaries[i])
+	end
+	for _, summary in storedRecent do
+		add(summary)
+	end
+	return out
+end
+
+-- Marks the sale refunded. The UpdateAsync transform is the guard against two managers (or
+-- two servers) refunding the same sale. Returns the updated sale, or nil and a reason.
+function Sales.markRefunded(receipt: string, by: string, restocked: boolean): (Sale?, string?)
+	local claimed, reason = false, nil
+	local ok, updated = Store.update(STORE, "s/" .. receipt, function(old)
+		claimed = false
+		if not old then
+			reason = "This sale has not finished saving yet. Try again in a minute."
+			return nil
+		elseif old.refunded then
+			reason = "This sale has already been refunded"
+			return nil
+		end
+		old.refunded = { t = os.time(), by = by, restocked = restocked }
+		claimed = true
+		return old
+	end)
+	if not ok then
+		return nil, "Could not reach the data store. Try again."
+	end
+	if not claimed then
+		return nil, reason
+	end
+	cache[receipt] = updated
+	pendingRefunds[receipt] = true
+	return updated, nil
+end
+
+function Sales.unmarkRefunded(receipt: string)
+	local ok, updated = Store.update(STORE, "s/" .. receipt, function(old)
+		if old then
+			old.refunded = nil
+		end
+		return old
+	end)
+	if ok and updated then
+		cache[receipt] = updated
+	end
+	pendingRefunds[receipt] = nil
+end
+
+function Sales.init()
+	Store.onFlush("sales", function()
+		if #pendingSummaries == 0 and next(pendingRefunds) == nil then
+			return
+		end
+		local batch = pendingSummaries
+		local refunds = pendingRefunds
+		pendingSummaries = {}
+		pendingRefunds = {}
+		local ok = Store.update(STORE, "recent", function(old)
+			local merged, seen = {}, {}
+			for i = #batch, 1, -1 do
+				table.insert(merged, batch[i])
+				seen[batch[i].receipt] = true
+			end
+			for _, summary in old or {} do
+				if #merged >= KEEP then
+					break
+				end
+				if not seen[summary.receipt] then
+					table.insert(merged, summary)
+				end
+			end
+			for _, summary in merged do
+				if refunds[summary.receipt] then
+					summary.refunded = true
+				end
+			end
+			return merged
+		end)
+		if ok then
+			storedAt = -math.huge
+		else
+			for i, summary in batch do
+				table.insert(pendingSummaries, i, summary)
+			end
+			for receipt in refunds do
+				pendingRefunds[receipt] = true
+			end
+		end
+	end)
+end
+
+return Sales
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="11">
+        <Properties>
+          <string name="Name">Shifts</string>
+          <string name="Source"><![CDATA[-- Register shifts: open, take sales, X report at any time, Z report on close.
+-- The roleplay equivalent of the web POS till session.
+
+local HttpService = game:GetService("HttpService")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Aggregate = require(Shared.Aggregate)
+local Store = require(script.Parent.Store)
+
+local Shifts = {}
+
+export type Shift = {
+	id: string,
+	registerId: string,
+	registerName: string,
+	openedAt: number,
+	openedBy: string,
+	totals: Aggregate.Aggregate,
+}
+
+export type Report = {
+	id: string,
+	registerName: string,
+	openedAt: number,
+	openedBy: string,
+	closedAt: number?,
+	closedBy: string?,
+	totals: Aggregate.Aggregate,
+	net: number,
+	average: number,
+	topProducts: { Aggregate.Ranked },
+	cashiers: { Aggregate.RankedCashier },
+}
+
+function Shifts.new(registerId: string, registerName: string, openedBy: Player): Shift
+	return {
+		id = string.sub(HttpService:GenerateGUID(false), 1, 8),
+		registerId = registerId,
+		registerName = registerName,
+		openedAt = os.time(),
+		openedBy = openedBy.Name,
+		totals = Aggregate.new(),
+	}
+end
+
+function Shifts.recordSale(shift: Shift, sale)
+	Aggregate.addSale(shift.totals, sale)
+end
+
+function Shifts.recordRefund(shift: Shift, sale)
+	Aggregate.addRefund(shift.totals, sale)
+end
+
+function Shifts.report(shift: Shift): Report
+	local totals = shift.totals
+	return {
+		id = shift.id,
+		registerName = shift.registerName,
+		openedAt = shift.openedAt,
+		openedBy = shift.openedBy,
+		totals = totals,
+		net = Aggregate.net(totals),
+		average = if totals.count > 0 then math.floor(totals.sales / totals.count + 0.5) else 0,
+		topProducts = Aggregate.topProducts(totals, 5),
+		cashiers = Aggregate.topCashiers(totals, 10),
+	}
+end
+
+-- Builds the Z report and saves it. Saving runs in the background.
+function Shifts.close(shift: Shift, closedBy: string): Report
+	local report = Shifts.report(shift)
+	report.closedAt = os.time()
+	report.closedBy = closedBy
+	task.spawn(Store.update, "Shifts", "z/" .. shift.id, function()
+		return report
+	end)
+	return report
+end
+
+return Shifts
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="12">
+        <Properties>
+          <string name="Name">Staff</string>
+          <string name="Source"><![CDATA[--!nolint DeprecatedApi
+-- GetRankInGroupAsync is soft-deprecated for GroupService:GetRolesInGroupAsync, whose result is
+-- not typed yet. Rank numbers are what group-run shops configure, so this keeps using them.
+
+-- Works out each player's role once when they join, from Config.Staff.
+-- The role is also set as the "POSRole" attribute so other scripts in your game can read it.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Roles = require(Shared.Roles)
+
+local Staff = {}
+
+local roles: { [Player]: number } = {}
+
+local function resolve(player: Player): number
+	local settings = Config.Staff
+
+	if RunService:IsStudio() and settings.StudioRole then
+		return Roles.fromName(settings.StudioRole) or Roles.Customer
+	end
+
+	local override = Roles.fromName(settings.Users[player.UserId])
+	if override then
+		return override
+	end
+
+	if settings.OwnerIsManager and game.CreatorType == Enum.CreatorType.User and player.UserId == game.CreatorId then
+		return Roles.Manager
+	end
+
+	if settings.GroupId and settings.GroupId > 0 then
+		local ok, rank = pcall(player.GetRankInGroupAsync, player, settings.GroupId)
+		if ok then
+			if settings.OwnerIsManager and rank == 255 then
+				return Roles.Manager
+			elseif rank >= settings.ManagerRank then
+				return Roles.Manager
+			elseif rank >= settings.CashierRank then
+				return Roles.Cashier
+			end
+		else
+			warn("[RoPOS] Could not read group rank for " .. player.Name .. ": " .. tostring(rank))
+		end
+	end
+
+	return Roles.Customer
+end
+
+function Staff.roleOf(player: Player): number
+	local role = roles[player]
+	if role == nil then
+		role = resolve(player)
+		roles[player] = role
+		player:SetAttribute("POSRole", Roles.name(role))
+	end
+	return role
+end
+
+function Staff.isStaff(player: Player): boolean
+	return Staff.roleOf(player) >= Roles.Cashier
+end
+
+function Staff.maxDiscount(player: Player): number
+	if Staff.roleOf(player) >= Roles.Manager then
+		return Config.Discounts.ManagerMaxPct
+	end
+	return Config.Discounts.CashierMaxPct
+end
+
+function Staff.init()
+	Players.PlayerAdded:Connect(Staff.roleOf)
+	for _, player in Players:GetPlayers() do
+		task.spawn(Staff.roleOf, player)
+	end
+	Players.PlayerRemoving:Connect(function(player)
+		roles[player] = nil
+	end)
+end
+
+return Staff
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="13">
+        <Properties>
+          <string name="Name">Store</string>
+          <string name="Source"><![CDATA[-- DataStore access with retries, a serialised flush loop, and an in-memory fallback for
+-- Studio places that have API access turned off.
+--
+-- Every shared document is written with UpdateAsync and a transform that applies this
+-- server's *changes* (deltas) to the stored value, so many servers can write the same key
+-- without overwriting each other.
+
+local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
+
+local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("POS").Config)
+
+local Store = {}
+Store.persistent = true
+
+local stores = {}
+local flushers: { { name: string, fn: () -> () } } = {}
+local flushing = false
+
+local function deepCopy(value: any): any
+	if type(value) ~= "table" then
+		return value
+	end
+	local copy = {}
+	for k, v in value do
+		copy[k] = deepCopy(v)
+	end
+	return copy
+end
+Store.deepCopy = deepCopy
+
+-- Same calls as a DataStore, kept in memory for this server only.
+local MemoryStore = {}
+MemoryStore.__index = MemoryStore
+
+function MemoryStore.new()
+	return setmetatable({ data = {} }, MemoryStore)
+end
+
+function MemoryStore:GetAsync(key: string)
+	return deepCopy(self.data[key])
+end
+
+function MemoryStore:SetAsync(key: string, value: any)
+	self.data[key] = deepCopy(value)
+end
+
+function MemoryStore:UpdateAsync(key: string, transform: (any) -> any)
+	local new = transform(deepCopy(self.data[key]))
+	if new == nil then
+		return nil
+	end
+	self.data[key] = deepCopy(new)
+	return deepCopy(new)
+end
+
+function Store.init()
+	if not RunService:IsStudio() then
+		return
+	end
+	local ok, err = pcall(function()
+		DataStoreService:GetDataStore("RoPOS_Probe"):GetAsync("probe")
+	end)
+	if not ok then
+		Store.persistent = false
+		warn(
+			"[RoPOS] DataStores are not available ("
+				.. tostring(err)
+				.. "). Data is kept in memory and is lost when the test stops. To save data, publish the place and turn on"
+				.. " Game Settings > Security > Enable Studio Access to API Services."
+		)
+	end
+end
+
+function Store.get(name: string)
+	local fullName = string.format("RoPOS_%s_%s", name, Config.Data.Scope)
+	local store = stores[fullName]
+	if not store then
+		store = if Store.persistent then DataStoreService:GetDataStore(fullName) else MemoryStore.new()
+		stores[fullName] = store
+	end
+	return store
+end
+
+local ATTEMPTS = 4
+
+function Store.retry(label: string, fn: () -> any): (boolean, any)
+	local lastError
+	for attempt = 1, ATTEMPTS do
+		local ok, result = pcall(fn)
+		if ok then
+			return true, result
+		end
+		lastError = result
+		if attempt < ATTEMPTS then
+			task.wait(0.5 * 2 ^ attempt)
+		end
+	end
+	warn(string.format("[RoPOS] %s failed: %s", label, tostring(lastError)))
+	return false, lastError
+end
+
+function Store.read(storeName: string, key: string): (boolean, any)
+	local store = Store.get(storeName)
+	return Store.retry("read " .. storeName .. "/" .. key, function()
+		return store:GetAsync(key)
+	end)
+end
+
+-- transform(old) returns the new value, or nil to leave the key unchanged.
+function Store.update(storeName: string, key: string, transform: (any) -> any): (boolean, any)
+	local store = Store.get(storeName)
+	return Store.retry("update " .. storeName .. "/" .. key, function()
+		return store:UpdateAsync(key, transform)
+	end)
+end
+
+-- Flushers send batched changes. They never run at the same time as each other.
+function Store.onFlush(name: string, fn: () -> ())
+	table.insert(flushers, { name = name, fn = fn })
+end
+
+function Store.flushAll()
+	while flushing do
+		task.wait()
+	end
+	flushing = true
+	for _, flusher in flushers do
+		local ok, err = pcall(flusher.fn)
+		if not ok then
+			warn(string.format("[RoPOS] flush %s failed: %s", flusher.name, tostring(err)))
+		end
+	end
+	flushing = false
+end
+
+function Store.start()
+	task.spawn(function()
+		while true do
+			task.wait(Config.Data.FlushInterval)
+			Store.flushAll()
+		end
+	end)
+	game:BindToClose(function()
+		Store.flushAll()
+	end)
+end
+
+return Store
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="14">
+        <Properties>
+          <string name="Name">Wallet</string>
+          <string name="Source"><![CDATA[-- The customer's money.
+--
+-- Builtin provider: the leaderstats value is the live balance. Saves send only the change since
+-- the last save (value - baseline) through UpdateAsync, so a refund credited to the same key by
+-- another server is merged instead of overwritten. Other scripts in your game can change the
+-- leaderstats value freely and the change is saved too.
+--
+-- Leaderstats provider: uses a value your game already creates and saves.
+
+local Players = game:GetService("Players")
+local MessagingService = game:GetService("MessagingService")
+
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")
+local Config = require(Shared.Config)
+local Store = require(script.Parent.Store)
+
+local Wallet = {}
+
+type Entry = {
+	stat: IntValue, -- may be a NumberValue in Leaderstats mode; both have a numeric Value
+	baseline: number,
+	loaded: boolean,
+	saving: boolean,
+}
+
+local entries: { [Player]: Entry } = {}
+local TOPIC = "RoPOS_Wallet"
+local STORE = "Wallets"
+
+local function builtin(): boolean
+	return Config.Currency.Provider ~= "Leaderstats"
+end
+
+local function key(userId: number): string
+	return "u" .. userId
+end
+
+local function ensureStat(player: Player): IntValue
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not leaderstats then
+		leaderstats = Instance.new("Folder")
+		leaderstats.Name = "leaderstats"
+		leaderstats.Parent = player
+	end
+	local stat = leaderstats:FindFirstChild(Config.Currency.StatName)
+	if not stat then
+		stat = Instance.new("IntValue")
+		stat.Name = Config.Currency.StatName
+		stat.Parent = leaderstats
+	end
+	return stat
+end
+
+local function save(player: Player, entry: Entry)
+	while entry.saving do
+		task.wait()
+	end
+	if not entry.loaded then
+		return
+	end
+	entry.saving = true
+	local snapshot = entry.stat.Value
+	local delta = snapshot - entry.baseline
+	local ok, stored = Store.update(STORE, key(player.UserId), function(old)
+		old = old or { balance = Config.Currency.StartingBalance }
+		old.balance = math.max(0, old.balance + delta)
+		return old
+	end)
+	if ok and stored then
+		-- Anything above our snapshot was credited by another server while we were away.
+		local extra = stored.balance - snapshot
+		entry.baseline = stored.balance
+		if extra ~= 0 then
+			entry.stat.Value += extra
+		end
+	end
+	entry.saving = false
+end
+
+local function load(player: Player)
+	if not builtin() then
+		local leaderstats = player:WaitForChild("leaderstats", 15)
+		local stat = leaderstats and leaderstats:WaitForChild(Config.Currency.StatName, 15)
+		if stat and (stat:IsA("IntValue") or stat:IsA("NumberValue")) then
+			entries[player] = { stat = stat :: any, baseline = 0, loaded = true, saving = false }
+		else
+			warn(
+				"[RoPOS] "
+					.. player.Name
+					.. " has no leaderstats."
+					.. Config.Currency.StatName
+					.. "; payments are disabled for them"
+			)
+		end
+		return
+	end
+
+	local entry: Entry = { stat = ensureStat(player), baseline = 0, loaded = false, saving = false }
+	entries[player] = entry
+	for attempt = 1, 5 do
+		local ok, stored = Store.update(STORE, key(player.UserId), function(old)
+			return old or { balance = Config.Currency.StartingBalance }
+		end)
+		if entries[player] ~= entry then
+			return
+		end
+		if ok and stored then
+			entry.baseline = stored.balance
+			entry.stat.Value = stored.balance
+			entry.loaded = true
+			return
+		end
+		task.wait(5 * attempt)
+	end
+	warn("[RoPOS] Could not load the wallet for " .. player.Name .. "; payments are disabled for them")
+end
+
+function Wallet.ready(player: Player): boolean
+	local entry = entries[player]
+	return entry ~= nil and entry.loaded
+end
+
+function Wallet.balance(player: Player): number?
+	local entry = entries[player]
+	return if entry and entry.loaded then entry.stat.Value else nil
+end
+
+-- Synchronous: no yield between the balance check and the debit.
+function Wallet.tryDebit(player: Player, amount: number): boolean
+	local entry = entries[player]
+	if not entry or not entry.loaded or entry.stat.Value < amount then
+		return false
+	end
+	entry.stat.Value -= amount
+	return true
+end
+
+function Wallet.credit(player: Player, amount: number): boolean
+	local entry = entries[player]
+	if not entry or not entry.loaded then
+		return false
+	end
+	entry.stat.Value += amount
+	return true
+end
+
+-- Credits a player who may be offline or in another server.
+function Wallet.creditUserId(userId: number, amount: number): (boolean, string?)
+	local player = Players:GetPlayerByUserId(userId)
+	if player and Wallet.credit(player, amount) then
+		return true
+	end
+	if not builtin() then
+		return false, "The customer must be in this server to get a refund"
+	end
+	local ok = Store.update(STORE, key(userId), function(old)
+		old = old or { balance = Config.Currency.StartingBalance }
+		old.balance += amount
+		return old
+	end)
+	if not ok then
+		return false, "Could not reach the data store. Try again."
+	end
+	-- Tell the server they are on (if any) to pick up the new balance now.
+	pcall(MessagingService.PublishAsync, MessagingService, TOPIC, userId)
+	return true
+end
+
+function Wallet.init()
+	Players.PlayerAdded:Connect(load)
+	for _, player in Players:GetPlayers() do
+		task.spawn(load, player)
+	end
+
+	Players.PlayerRemoving:Connect(function(player)
+		local entry = entries[player]
+		if entry and builtin() then
+			save(player, entry)
+		end
+		entries[player] = nil
+	end)
+
+	if builtin() then
+		Store.onFlush("wallets", function()
+			-- Snapshot: saves yield, and players can join (adding keys) meanwhile.
+			for player, entry in table.clone(entries) do
+				if entry.loaded and entry.stat.Value ~= entry.baseline then
+					save(player, entry)
+				end
+			end
+		end)
+
+		task.spawn(function()
+			pcall(MessagingService.SubscribeAsync, MessagingService, TOPIC, function(message)
+				local player = Players:GetPlayerByUserId(tonumber(message.Data) or 0)
+				local entry = player and entries[player]
+				if entry then
+					save(player, entry)
+				end
+			end)
+		end)
+	end
+end
+
+return Wallet
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+</roblox>

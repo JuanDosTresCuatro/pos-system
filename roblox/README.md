@@ -52,6 +52,16 @@ Nothing is saved between play tests until you publish the place and turn on **Ga
 
 Developers who prefer files and Git can sync with Rojo instead (see [Development](#development)).
 
+### Send it to someone
+
+The [`studio/`](studio/) folder has everything Roblox Studio needs and nothing else: the demo place, one model file per Studio location (for **Insert from File**), the scripts as plain files, and a `READ ME FIRST.txt` with setup steps. To make a zip to send, run this in the `roblox` folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/package-studio.ps1
+```
+
+It rebuilds `studio/` from the current code and writes `RoPOS-Studio.zip`. Run it again after changing the code.
+
 ## How a sale works in game
 
 | Who | Does what |
@@ -157,6 +167,8 @@ roblox/
 │   ├── simulate.luau         End-to-end run of the server code on 2 fake servers (Lune)
 │   └── sim/                  The fake Roblox engine and loader used by simulate.luau
 ├── simulator/index.html      Browser simulator, no Roblox needed
+├── studio/                   Studio-only package: place, models, scripts, READ ME FIRST.txt
+├── packaging/                Builds studio/ and RoPOS-Studio.zip
 └── RoPOS.rbxlx               Ready-to-open place file (built with `rojo build`)
 ```
 

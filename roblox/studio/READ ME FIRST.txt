@@ -1,0 +1,127 @@
+RoPOS: a point of sale system for Roblox
+=========================================
+
+Staff ring up orders at a till in your game. The customer approves the
+payment on their own screen, the money moves, stock goes down and the items
+appear in their backpack. Managers get shift reports, refunds, price and
+stock control, 7-day reports and an audit log. Prices are in pounds (£).
+
+All you need is Roblox Studio (free from create.roblox.com).
+
+
+WHAT IS IN THIS FOLDER
+----------------------
+
+RoPOS.rbxlx      A complete demo game. Open it and press Play.
+Models/          The 3 parts of RoPOS, for adding it to your own game.
+Scripts/         The same code as plain files, laid out like Studio's
+                 Explorer, if you want to read it. You do not need these
+                 to use RoPOS.
+
+
+OPTION 1: TRY THE DEMO (2 minutes)
+----------------------------------
+
+1. Double-click RoPOS.rbxlx (or in Studio: File > Open from File).
+2. Press Play (F5). A Blox Mart shop counter appears in front of you.
+3. Walk round the back of the counter and hold E on the till.
+4. Go to the Shift tab and press "Open shift".
+5. On the Sell tab, tap some items, press "Choose customer", pick
+   yourself and press "Charge".
+6. Your payment screen pops up. Press "Pay". The items appear in your
+   backpack and your Cash (top right) goes down.
+
+In Studio play tests everyone is a manager and you can charge yourself,
+so you can try everything alone. To test a cashier and a customer
+separately, use Test > Clients and Servers with 2 players.
+
+
+OPTION 2: ADD IT TO YOUR OWN GAME (5 minutes)
+---------------------------------------------
+
+1. Open your game in Studio.
+2. In the Explorer, right-click each service below and choose
+   "Insert from File...", then pick the matching file in Models/:
+
+     Right-click this                    Insert this file
+     ----------------------------------  ------------------------
+     ReplicatedStorage                   Models/POS.rbxmx
+     ServerScriptService                 Models/POSServer.rbxmx
+     StarterPlayer > StarterPlayerScripts   Models/POSClient.rbxmx
+
+   Keep the names POS, POSServer and POSClient exactly as they are.
+
+3. Press Play. If your game has no till yet, RoPOS builds a demo counter
+   so you can test straight away.
+
+4. Open ReplicatedStorage > POS > Config to set up your shop:
+   - Config.Store: shop name, receipt prefix, receipt message
+   - Config.Products: your items, prices (whole pounds), stock
+   - Config.Currency: starting money, or use your game's own leaderstats
+   - Config.Staff: who your cashiers and managers are (see below)
+   Every setting is explained in the file.
+
+
+USE YOUR OWN TILL
+-----------------
+
+1. Build a till model (or use a single Part).
+2. Select it, open Properties > Tags and add the tag:  POSRegister
+3. Optional attributes on the model:
+     RegisterName (string)  for example "Drive-thru"
+     RegisterId   (string)  a fixed ID if you have several tills
+4. Optional: put a Part named "Screen" inside the model. Its front face
+   becomes the screen customers see. Without one, a floating screen
+   appears above the till.
+5. In Config, set Demo.SpawnRegister = false so the demo counter is not built.
+
+
+GIVE CUSTOMERS THE ITEMS THEY BUY
+---------------------------------
+
+Put a Tool in ServerStorage > POSItems with the same name as the product's
+Tool setting in Config.Products (for example a Tool named "Bloxy Cola").
+RoPOS gives a copy to the customer for every one they buy. Until you add
+your own, it creates simple placeholder Tools.
+
+
+STAFF: WHO CAN USE THE TILL
+---------------------------
+
+Customers can only buy. Cashiers can sell, give small discounts (up to
+10%) and open and close shifts. Managers can also refund, change prices
+and stock, and read reports and the audit log.
+
+Set this before you publish, in Config.Staff:
+  - GroupId, CashierRank, ManagerRank: use your Roblox group's ranks, or
+  - Users: list user IDs, for example  [123456789] = "Manager"
+The owner of the game is always a manager.
+
+Studio gives everyone the manager role for testing. To test the real
+rules in Studio, set Config.Staff.StudioRole = nil.
+
+
+SAVING DATA
+-----------
+
+In a published game, RoPOS saves money, stock, sales and reports in
+Roblox DataStores, and every server of the game shares them.
+
+Studio does not save anything until you:
+  1. Publish the game to Roblox (File > Publish to Roblox), and
+  2. Turn on Game Settings > Security > "Enable Studio Access to API Services".
+Until then the POS shows "Studio: data not saved" and everything resets
+when you stop the test.
+
+
+IF SOMETHING DOES NOT WORK
+--------------------------
+
+- Nothing happens when I hold E: check you are a cashier or manager
+  (see Staff above) and standing within about 2.5 m of the till.
+- "needs to stand at the register": the customer must be within 16 studs
+  (about 4.5 m) of the till.
+- The POS window closes by itself: the cashier walked more than 20 studs
+  (about 5.6 m) from the till.
+- Errors in the Output window (View > Output) start with [RoPOS] and say
+  what to fix.

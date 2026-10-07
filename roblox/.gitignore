@@ -4,5 +4,8 @@ build/
 *.rbxlx
 # The ready-to-open place file is committed so people can try RoPOS without installing Rojo.
 !/RoPOS.rbxlx
+!/studio/RoPOS.rbxlx
+# Built by packaging/package-studio.ps1 to send to people; rebuild instead of committing it.
+RoPOS-Studio.zip
 *.lock
 roblox.yml

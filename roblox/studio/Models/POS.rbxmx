@@ -1,0 +1,826 @@
+<roblox version="4">
+  <Item class="Folder" referent="0">
+    <Properties>
+      <string name="Name">POS</string>
+    </Properties>
+    <Item class="ModuleScript" referent="1">
+      <Properties>
+        <string name="Name">Aggregate</string>
+        <string name="Source"><![CDATA[--!strict
+-- Sales totals used by shift (X/Z) reports and daily reports. Aggregates are plain tables so
+-- they can be saved to a DataStore and merged as deltas from many servers.
+
+export type ProductStat = { name: string, qty: number, total: number }
+export type CashierStat = { count: number, total: number }
+
+export type Aggregate = {
+	count: number, -- number of sales
+	items: number, -- units sold
+	gross: number, -- before discount
+	discounts: number,
+	tax: number,
+	sales: number, -- money taken
+	refunds: number, -- money returned
+	refundCount: number,
+	products: { [string]: ProductStat },
+	cashiers: { [string]: CashierStat },
+}
+
+-- The fields of a sale that aggregation reads.
+export type SaleLike = {
+	cashier: { name: string },
+	lines: { { productId: string, name: string?, qty: number, total: number } },
+	subtotal: number,
+	discount: number,
+	tax: number,
+	total: number,
+}
+
+local Aggregate = {}
+
+function Aggregate.new(): Aggregate
+	return {
+		count = 0,
+		items = 0,
+		gross = 0,
+		discounts = 0,
+		tax = 0,
+		sales = 0,
+		refunds = 0,
+		refundCount = 0,
+		products = {},
+		cashiers = {},
+	}
+end
+
+function Aggregate.addSale(agg: Aggregate, sale: SaleLike)
+	agg.count += 1
+	agg.gross += sale.subtotal
+	agg.discounts += sale.discount
+	agg.tax += sale.tax
+	agg.sales += sale.total
+	for _, line in sale.lines do
+		agg.items += line.qty
+		local stat = agg.products[line.productId]
+		if not stat then
+			stat = { name = line.name or line.productId, qty = 0, total = 0 }
+			agg.products[line.productId] = stat
+		end
+		stat.qty += line.qty
+		stat.total += line.total
+	end
+	local cashier = agg.cashiers[sale.cashier.name]
+	if not cashier then
+		cashier = { count = 0, total = 0 }
+		agg.cashiers[sale.cashier.name] = cashier
+	end
+	cashier.count += 1
+	cashier.total += sale.total
+end
+
+function Aggregate.addRefund(agg: Aggregate, sale: SaleLike)
+	agg.refunds += sale.total
+	agg.refundCount += 1
+end
+
+-- Adds every value of `delta` into `into`. Used to apply this server's changes on top of
+-- whatever other servers already saved.
+function Aggregate.merge(into: Aggregate, delta: Aggregate): Aggregate
+	into.count += delta.count
+	into.items += delta.items
+	into.gross += delta.gross
+	into.discounts += delta.discounts
+	into.tax += delta.tax
+	into.sales += delta.sales
+	into.refunds += delta.refunds
+	into.refundCount += delta.refundCount
+	for id, stat in delta.products do
+		local target = into.products[id]
+		if target then
+			target.qty += stat.qty
+			target.total += stat.total
+		else
+			into.products[id] = { name = stat.name, qty = stat.qty, total = stat.total }
+		end
+	end
+	for name, stat in delta.cashiers do
+		local target = into.cashiers[name]
+		if target then
+			target.count += stat.count
+			target.total += stat.total
+		else
+			into.cashiers[name] = { count = stat.count, total = stat.total }
+		end
+	end
+	return into
+end
+
+-- Fills fields that are missing from data saved by an older version.
+function Aggregate.normalise(raw: any): Aggregate
+	local agg = Aggregate.new()
+	if typeof(raw) == "table" then
+		Aggregate.merge(agg, {
+			count = raw.count or 0,
+			items = raw.items or 0,
+			gross = raw.gross or 0,
+			discounts = raw.discounts or 0,
+			tax = raw.tax or 0,
+			sales = raw.sales or 0,
+			refunds = raw.refunds or 0,
+			refundCount = raw.refundCount or 0,
+			products = raw.products or {},
+			cashiers = raw.cashiers or {},
+		})
+	end
+	return agg
+end
+
+export type Ranked = { id: string, name: string, qty: number, total: number }
+
+function Aggregate.topProducts(agg: Aggregate, limit: number): { Ranked }
+	local list: { Ranked } = {}
+	for id, stat in agg.products do
+		table.insert(list, { id = id, name = stat.name, qty = stat.qty, total = stat.total })
+	end
+	table.sort(list, function(a, b)
+		if a.total ~= b.total then
+			return a.total > b.total
+		end
+		return a.id < b.id
+	end)
+	while #list > limit do
+		table.remove(list)
+	end
+	return list
+end
+
+export type RankedCashier = { name: string, count: number, total: number }
+
+function Aggregate.topCashiers(agg: Aggregate, limit: number): { RankedCashier }
+	local list: { RankedCashier } = {}
+	for name, stat in agg.cashiers do
+		table.insert(list, { name = name, count = stat.count, total = stat.total })
+	end
+	table.sort(list, function(a, b)
+		if a.total ~= b.total then
+			return a.total > b.total
+		end
+		return a.name < b.name
+	end)
+	while #list > limit do
+		table.remove(list)
+	end
+	return list
+end
+
+function Aggregate.net(agg: Aggregate): number
+	return agg.sales - agg.refunds
+end
+
+return Aggregate
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="2">
+      <Properties>
+        <string name="Name">Config</string>
+        <string name="Source"><![CDATA[-- RoPOS configuration. Most games only need to edit this file.
+-- Money is always a whole number in your game's currency (no decimals).
+
+local Config = {}
+
+Config.Store = {
+	Name = "Blox Mart",
+	ReceiptPrefix = "BM",
+	Footer = "Thanks for shopping at Blox Mart!",
+}
+
+Config.Currency = {
+	-- "Builtin":     RoPOS creates and saves a leaderstats currency for you.
+	-- "Leaderstats": RoPOS uses an IntValue/NumberValue your game already creates under
+	--                player.leaderstats, and leaves saving to your game.
+	Provider = "Builtin",
+	StatName = "Cash",
+	Symbol = "£", -- whole pounds, like every Roblox currency
+	StartingBalance = 100,
+}
+
+Config.Tax = {
+	Enabled = false,
+	Name = "VAT",
+	-- true: prices already include tax. false: tax is added on top at checkout.
+	Inclusive = true,
+}
+
+Config.Staff = {
+	-- Roblox group that owns the shop. 0 = no group.
+	GroupId = 0,
+	ManagerRank = 250,
+	CashierRank = 10,
+	-- Per-user overrides: [UserId] = "Manager" | "Cashier"
+	Users = {
+		-- [123456789] = "Manager",
+	},
+	-- The place owner (user-owned games) or group owner (rank 255) is always a manager.
+	OwnerIsManager = true,
+	-- Role everyone gets during Studio play tests. nil = use the normal rules.
+	StudioRole = "Manager",
+}
+
+Config.Discounts = {
+	Presets = { 0, 5, 10, 15, 25, 50 },
+	CashierMaxPct = 10,
+	ManagerMaxPct = 100,
+}
+
+Config.Checkout = {
+	-- Distances are in studs (1 stud is about 0.28 m).
+	CustomerRange = 16, -- customer must stand within this distance of the register (about 4.5 m)
+	OperatorRange = 20, -- cashier is signed out of the register beyond this distance (about 5.6 m)
+	PaymentTimeout = 30, -- seconds the customer has to approve a payment
+	MaxLines = 20,
+	MaxQty = 20,
+	-- Let a cashier charge themselves. "Studio" = only during play tests.
+	AllowSelfCheckout = "Studio",
+	-- Clone the product's Tool from ServerStorage.POSItems into the customer's Backpack.
+	GiveItems = true,
+}
+
+Config.Payouts = {
+	-- Percentage of each sale paid to the cashier who rang it up. This creates new
+	-- currency, so keep it at 0 unless your game economy plans for it.
+	CashierCommissionPct = 0,
+}
+
+Config.Inventory = {
+	LowStockAt = 5,
+}
+
+Config.Data = {
+	-- Change the scope to start with fresh data (for example "v2").
+	Scope = "v1",
+	FlushInterval = 20, -- seconds between batched DataStore writes
+}
+
+Config.Demo = {
+	-- Build a shop counter if the place has no register tagged "POSRegister".
+	SpawnRegister = true,
+	-- Create simple item Tools for products that have no Tool in ServerStorage.POSItems.
+	CreateItemTools = true,
+}
+
+Config.RegisterTag = "POSRegister"
+
+Config.Categories = { "Snacks", "Gear", "Tools", "Cosmetics" }
+
+-- Id must be unique and must never change (sales and stock refer to it).
+-- Price is in whole pounds. Stock = nil means the product is not stock-tracked.
+-- TaxRate is a percentage (20 = UK standard VAT) and is used only when Config.Tax.Enabled is true.
+-- Tool is the name of a Tool in ServerStorage.POSItems that the customer receives.
+local rgb = Color3.fromRGB
+Config.Products = {
+	-- Snacks
+	{
+		Id = "bloxycola",
+		Name = "Bloxy Cola",
+		Category = "Snacks",
+		Price = 3,
+		TaxRate = 20,
+		Colour = rgb(196, 40, 28),
+		Tool = "Bloxy Cola",
+	},
+	{
+		Id = "pizza",
+		Name = "Pizza Slice",
+		Category = "Snacks",
+		Price = 4,
+		TaxRate = 20,
+		Colour = rgb(245, 180, 60),
+		Tool = "Pizza Slice",
+	},
+	{
+		Id = "cheezburger",
+		Name = "Cheezburger",
+		Category = "Snacks",
+		Price = 5,
+		TaxRate = 20,
+		Colour = rgb(170, 110, 60),
+		Tool = "Cheezburger",
+	},
+	{
+		Id = "taco",
+		Name = "Taco",
+		Category = "Snacks",
+		Price = 3,
+		TaxRate = 20,
+		Colour = rgb(230, 190, 90),
+		Tool = "Taco",
+	},
+	{
+		Id = "icecream",
+		Name = "Ice Cream Cone",
+		Category = "Snacks",
+		Price = 2,
+		TaxRate = 20,
+		Colour = rgb(255, 170, 200),
+		Tool = "Ice Cream Cone",
+	},
+	-- Gear
+	{
+		Id = "gravitycoil",
+		Name = "Gravity Coil",
+		Category = "Gear",
+		Price = 25,
+		TaxRate = 20,
+		Stock = 10,
+		Colour = rgb(120, 80, 220),
+		Tool = "Gravity Coil",
+	},
+	{
+		Id = "speedcoil",
+		Name = "Speed Coil",
+		Category = "Gear",
+		Price = 25,
+		TaxRate = 20,
+		Stock = 10,
+		Colour = rgb(40, 200, 120),
+		Tool = "Speed Coil",
+	},
+	{
+		Id = "grapplehook",
+		Name = "Grapple Hook",
+		Category = "Gear",
+		Price = 30,
+		TaxRate = 20,
+		Stock = 6,
+		Colour = rgb(90, 100, 120),
+		Tool = "Grapple Hook",
+	},
+	{
+		Id = "magiccarpet",
+		Name = "Magic Carpet",
+		Category = "Gear",
+		Price = 60,
+		TaxRate = 20,
+		Stock = 3,
+		Colour = rgb(170, 40, 90),
+		Tool = "Magic Carpet",
+	},
+	{
+		Id = "jetpack",
+		Name = "Jetpack",
+		Category = "Gear",
+		Price = 80,
+		TaxRate = 20,
+		Stock = 2,
+		Colour = rgb(160, 165, 175),
+		Tool = "Jetpack",
+	},
+	-- Tools
+	{
+		Id = "sword",
+		Name = "Linked Sword",
+		Category = "Tools",
+		Price = 15,
+		TaxRate = 20,
+		Colour = rgb(200, 205, 215),
+		Tool = "Linked Sword",
+	},
+	{
+		Id = "paintball",
+		Name = "Paintball Gun",
+		Category = "Tools",
+		Price = 20,
+		TaxRate = 20,
+		Colour = rgb(30, 140, 230),
+		Tool = "Paintball Gun",
+	},
+	{
+		Id = "slingshot",
+		Name = "Slingshot",
+		Category = "Tools",
+		Price = 8,
+		TaxRate = 20,
+		Colour = rgb(130, 85, 50),
+		Tool = "Slingshot",
+	},
+	{
+		Id = "flashlight",
+		Name = "Flashlight",
+		Category = "Tools",
+		Price = 5,
+		TaxRate = 20,
+		Colour = rgb(250, 220, 90),
+		Tool = "Flashlight",
+	},
+	{
+		Id = "boombox",
+		Name = "Boombox",
+		Category = "Tools",
+		Price = 12,
+		TaxRate = 20,
+		Stock = 4,
+		Colour = rgb(45, 45, 55),
+		Tool = "Boombox",
+	},
+	-- Cosmetics
+	{
+		Id = "partyhat",
+		Name = "Party Hat",
+		Category = "Cosmetics",
+		Price = 6,
+		TaxRate = 20,
+		Colour = rgb(255, 90, 160),
+		Tool = "Party Hat",
+	},
+	{
+		Id = "tophat",
+		Name = "Top Hat",
+		Category = "Cosmetics",
+		Price = 10,
+		TaxRate = 20,
+		Colour = rgb(25, 25, 30),
+		Tool = "Top Hat",
+	},
+	{
+		Id = "sparkletrail",
+		Name = "Sparkle Trail",
+		Category = "Cosmetics",
+		Price = 18,
+		TaxRate = 20,
+		Stock = 15,
+		Colour = rgb(120, 220, 255),
+	},
+	{
+		Id = "crown",
+		Name = "Golden Crown",
+		Category = "Cosmetics",
+		Price = 150,
+		TaxRate = 20,
+		Colour = rgb(240, 190, 40),
+		Tool = "Golden Crown",
+	},
+}
+
+return Config
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="3">
+      <Properties>
+        <string name="Name">Format</string>
+        <string name="Source"><![CDATA[--!strict
+-- Text formatting. Roblox only allows os.date("*t") and os.date("!*t"), so times are built by hand.
+
+local Format = {}
+
+local DAYS = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+
+function Format.number(n: number): string
+	local digits = tostring(math.floor(math.abs(n)))
+	local grouped = string.reverse((string.gsub(string.reverse(digits), "(%d%d%d)", "%1,")))
+	if string.sub(grouped, 1, 1) == "," then
+		grouped = string.sub(grouped, 2)
+	end
+	return (if n < 0 then "-" else "") .. grouped
+end
+
+function Format.money(n: number, symbol: string?): string
+	local sign = if n < 0 then "-" else ""
+	return sign .. (symbol or "") .. Format.number(math.abs(n))
+end
+
+function Format.receipt(prefix: string, n: number): string
+	return string.format("%s-%06d", prefix, n)
+end
+
+function Format.clock(t: number): string
+	local d = os.date("*t", t) :: any
+	return string.format("%02d:%02d", d.hour, d.min)
+end
+
+function Format.date(t: number): string
+	local d = os.date("*t", t) :: any
+	return string.format("%04d-%02d-%02d", d.year, d.month, d.day)
+end
+
+function Format.dateTime(t: number): string
+	return Format.date(t) .. " " .. Format.clock(t)
+end
+
+-- Report days are UTC so every server agrees on which day a sale belongs to.
+function Format.dayKey(t: number): string
+	local d = os.date("!*t", t) :: any
+	return string.format("%04d-%02d-%02d", d.year, d.month, d.day)
+end
+
+function Format.weekday(t: number): string
+	local d = os.date("!*t", t) :: any
+	return DAYS[d.wday]
+end
+
+function Format.duration(seconds: number): string
+	seconds = math.max(0, math.floor(seconds))
+	local h = seconds // 3600
+	local m = (seconds % 3600) // 60
+	if h > 0 then
+		return string.format("%dh %02dm", h, m)
+	end
+	return string.format("%dm", m)
+end
+
+-- One receipt row: left text, then right text aligned to `width` characters (monospace).
+function Format.row(left: string, right: string, width: number): string
+	local space = width - utf8.len(left) :: number - utf8.len(right) :: number
+	if space < 1 then
+		local keep = math.max(1, width - (utf8.len(right) :: number) - 2)
+		local cut = utf8.offset(left, keep + 1)
+		left = (if cut then string.sub(left, 1, cut - 1) else left) .. "…"
+		space = math.max(1, width - utf8.len(left) :: number - utf8.len(right) :: number)
+	end
+	return left .. string.rep(" ", space) .. right
+end
+
+return Format
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="4">
+      <Properties>
+        <string name="Name">Net</string>
+        <string name="Source"><![CDATA[-- Two remotes carry everything:
+--   Api  (RemoteFunction) client -> server requests, routed by action name, answered with
+--        { ok = true, data = ... } or { ok = false, error = "message" }
+--   Push (RemoteEvent)    server -> client events: Push:FireClient(player, kind, payload)
+-- The server never calls InvokeClient, so a client cannot hang a server thread.
+
+local Net = {}
+
+local FOLDER = "Remotes"
+
+function Net.server(): (RemoteFunction, RemoteEvent)
+	local folder = Instance.new("Folder")
+	folder.Name = FOLDER
+	local api = Instance.new("RemoteFunction")
+	api.Name = "Api"
+	api.Parent = folder
+	local push = Instance.new("RemoteEvent")
+	push.Name = "Push"
+	push.Parent = folder
+	folder.Parent = script.Parent
+	return api, push
+end
+
+function Net.client(): (RemoteFunction, RemoteEvent)
+	local folder = script.Parent:WaitForChild(FOLDER)
+	return folder:WaitForChild("Api") :: RemoteFunction, folder:WaitForChild("Push") :: RemoteEvent
+end
+
+return Net
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="5">
+      <Properties>
+        <string name="Name">Pricing</string>
+        <string name="Source"><![CDATA[--!strict
+-- Line pricing shared by the client (live cart preview) and the server (authoritative totals).
+-- Port of public/js/pricing.js from the web POS: the same rounding, so both always agree.
+-- All money values are whole numbers. Rates are percentages.
+
+export type Line = {
+	productId: string,
+	name: string?,
+	unitPrice: number,
+	qty: number,
+	taxRate: number?,
+}
+
+export type PricedLine = {
+	productId: string,
+	name: string?,
+	unitPrice: number,
+	qty: number,
+	taxRate: number,
+	discount: number,
+	tax: number,
+	total: number,
+}
+
+export type Totals = {
+	lines: { PricedLine },
+	subtotal: number,
+	discount: number,
+	tax: number,
+	total: number,
+}
+
+export type Options = {
+	discountPct: number?,
+	taxInclusive: boolean?,
+}
+
+local Pricing = {}
+
+local function round(n: number): number
+	-- Math.round in JS rounds .5 up; all values here are >= 0, so floor(n + 0.5) matches it.
+	return math.floor(n + 0.5)
+end
+
+function Pricing.priceLines(lines: { Line }, options: Options?): Totals
+	local opts: Options = options or {}
+	local pct = math.clamp(tonumber(opts.discountPct) or 0, 0, 100)
+	local taxInclusive = if opts.taxInclusive == nil then true else opts.taxInclusive
+
+	local subtotal, discount, tax, total = 0, 0, 0, 0
+	local out: { PricedLine } = {}
+
+	for _, line in lines do
+		local gross = line.unitPrice * line.qty
+		local lineDiscount = round(gross * pct / 100)
+		local net = gross - lineDiscount
+		local rate = tonumber(line.taxRate) or 0
+		local lineTax = if taxInclusive then round(net * rate / (100 + rate)) else round(net * rate / 100)
+		local lineTotal = if taxInclusive then net else net + lineTax
+
+		subtotal += gross
+		discount += lineDiscount
+		tax += lineTax
+		total += lineTotal
+
+		table.insert(out, {
+			productId = line.productId,
+			name = line.name,
+			unitPrice = line.unitPrice,
+			qty = line.qty,
+			taxRate = rate,
+			discount = lineDiscount,
+			tax = lineTax,
+			total = lineTotal,
+		})
+	end
+
+	return { lines = out, subtotal = subtotal, discount = discount, tax = tax, total = total }
+end
+
+return Pricing
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="6">
+      <Properties>
+        <string name="Name">Roles</string>
+        <string name="Source"><![CDATA[--!strict
+-- Staff roles, lowest to highest. Compare with >= to check permissions.
+
+local Roles = {
+	Customer = 0,
+	Cashier = 1,
+	Manager = 2,
+}
+
+local NAMES = { [0] = "Customer", [1] = "Cashier", [2] = "Manager" }
+
+function Roles.name(role: number): string
+	return NAMES[role] or "Customer"
+end
+
+function Roles.fromName(name: string?): number?
+	if name == "Manager" then
+		return Roles.Manager
+	elseif name == "Cashier" then
+		return Roles.Cashier
+	elseif name == "Customer" then
+		return Roles.Customer
+	end
+	return nil
+end
+
+return Roles
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="7">
+      <Properties>
+        <string name="Name">Signal</string>
+        <string name="Source"><![CDATA[-- Minimal pure-Luau signal. Handlers run in their own thread so one error cannot break others.
+
+local Signal = {}
+Signal.__index = Signal
+
+export type Connection = { Disconnect: () -> () }
+
+function Signal.new()
+	return setmetatable({ _handlers = {} }, Signal)
+end
+
+function Signal:Connect(fn: (...any) -> ()): Connection
+	local handler = { fn = fn, connected = true }
+	table.insert(self._handlers, handler)
+	return {
+		Disconnect = function()
+			handler.connected = false
+			local index = table.find(self._handlers, handler)
+			if index then
+				table.remove(self._handlers, index)
+			end
+		end,
+	}
+end
+
+function Signal:Fire(...: any)
+	for _, handler in table.clone(self._handlers) do
+		if handler.connected then
+			task.spawn(handler.fn, ...)
+		end
+	end
+end
+
+return Signal
+]]></string>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="8">
+      <Properties>
+        <string name="Name">Validate</string>
+        <string name="Source"><![CDATA[--!strict
+-- Input checks for anything that arrives over a RemoteFunction. Never trust the client.
+
+export type CartLine = { productId: string, qty: number }
+
+local Validate = {}
+
+local HARD_LINE_LIMIT = 100
+
+function Validate.int(value: any, min: number, max: number): number?
+	if typeof(value) ~= "number" or value ~= value or value % 1 ~= 0 or value < min or value > max then
+		return nil
+	end
+	return value
+end
+
+function Validate.text(value: any, maxLength: number): string?
+	if typeof(value) ~= "string" then
+		return nil
+	end
+	local trimmed = string.match(value, "^%s*(.-)%s*$") or ""
+	if #trimmed == 0 or #trimmed > maxLength then
+		return nil
+	end
+	return trimmed
+end
+
+-- Accepts an array of { productId, qty }, merges duplicate products and keeps first-seen order.
+function Validate.cart(raw: any, maxLines: number, maxQty: number): ({ CartLine }?, string?)
+	if typeof(raw) ~= "table" then
+		return nil, "Invalid cart"
+	end
+
+	local merged: { [string]: number } = {}
+	local order: { string } = {}
+	local seen = 0
+
+	for index, line in raw do
+		seen += 1
+		if seen > HARD_LINE_LIMIT then
+			return nil, "Invalid cart"
+		end
+		if typeof(index) ~= "number" or typeof(line) ~= "table" then
+			return nil, "Invalid cart"
+		end
+		local id = Validate.text(line.productId, 64)
+		local qty = Validate.int(line.qty, 1, maxQty)
+		if not id or not qty then
+			return nil, "Invalid cart line"
+		end
+		if merged[id] then
+			merged[id] += qty
+		else
+			merged[id] = qty
+			table.insert(order, id)
+		end
+	end
+
+	if #order == 0 then
+		return nil, "The order is empty"
+	end
+	if #order > maxLines then
+		return nil, string.format("An order can have at most %d different items", maxLines)
+	end
+
+	local out: { CartLine } = {}
+	for _, id in order do
+		if merged[id] > maxQty then
+			return nil, string.format("You can sell at most %d of one item", maxQty)
+		end
+		table.insert(out, { productId = id, qty = merged[id] })
+	end
+	return out, nil
+end
+
+return Validate
+]]></string>
+      </Properties>
+    </Item>
+  </Item>
+</roblox>

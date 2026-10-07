@@ -1,0 +1,15 @@
+{
+  "name": "pos-system",
+  "version": "1.0.0",
+  "description": "Standard point of sale system: sales, products, stock, refunds, reports, staff and audit log",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
+    "package": "node scripts/package.js"
+  }
+}

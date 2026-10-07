@@ -1,0 +1,7 @@
+std = "roblox"
+# Lune scripts (the no-Roblox test runner) use Lune's standard library, not Roblox's.
+exclude = ["tests/run.luau", "tests/simulate.luau", "tests/sim/*"]
+
+[lints]
+# Screens build UI in long declarative tables; shadowing short names like `row` is intentional.
+shadowing = "allow"

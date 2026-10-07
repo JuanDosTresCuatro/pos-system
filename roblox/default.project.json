@@ -1,0 +1,97 @@
+{
+  "name": "RoPOS",
+  "globIgnorePaths": [
+    "**/run.luau",
+    "**/simulate.luau",
+    "**/sim/**"
+  ],
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "POS": {
+        "$path": "src/shared"
+      }
+    },
+    "ServerScriptService": {
+      "POSServer": {
+        "$path": "src/server"
+      },
+      "POSTests": {
+        "$path": "tests"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "POSClient": {
+          "$path": "src/client"
+        }
+      }
+    },
+    "Workspace": {
+      "$properties": {
+        "FilteringEnabled": true
+      },
+      "Baseplate": {
+        "$className": "Part",
+        "$properties": {
+          "Anchored": true,
+          "Locked": true,
+          "Size": [
+            512,
+            20,
+            512
+          ],
+          "Position": [
+            0,
+            -10,
+            0
+          ],
+          "Color": [
+            0.36,
+            0.42,
+            0.33
+          ],
+          "Material": "Grass",
+          "TopSurface": "Smooth",
+          "BottomSurface": "Smooth"
+        }
+      },
+      "SpawnLocation": {
+        "$className": "SpawnLocation",
+        "$properties": {
+          "Anchored": true,
+          "Size": [
+            6,
+            1,
+            6
+          ],
+          "Position": [
+            0,
+            0.5,
+            0
+          ],
+          "Color": [
+            0.36,
+            0.52,
+            1
+          ],
+          "Material": "SmoothPlastic",
+          "TopSurface": "Smooth",
+          "Duration": 0
+        }
+      }
+    },
+    "Lighting": {
+      "$properties": {
+        "ClockTime": 14.5,
+        "Brightness": 2.5,
+        "GlobalShadows": true
+      }
+    },
+    "SoundService": {
+      "$properties": {
+        "RespectFilteringEnabled": true
+      }
+    }
+  }
+}

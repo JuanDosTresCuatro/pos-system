@@ -2,6 +2,10 @@
 
 A standard point of sale system for a single shop. It runs in a web browser and needs only Node.js 22.13 or later. It has no third-party dependencies.
 
+## Roblox version
+
+The [roblox](roblox/) folder has RoPOS, a version of this POS for Roblox experiences, built with Rojo. It uses the same pricing rules. See [roblox/README.md](roblox/README.md).
+
 ## Start
 
 ```sh

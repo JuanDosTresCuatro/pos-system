@@ -1,0 +1,1261 @@
+<title>RoPOS Simulator</title>
+<meta name="description" content="Try the RoPOS Roblox point of sale in a browser: ring up orders as staff and approve them as the customer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&family=Roboto+Mono:wght@400;700&display=swap">
+<style>
+/* Layout: a play-test bench on a baseplate. Left, the staff POS window as it appears in game.
+   Right, what is happening in the world: the register's customer screen and the customer's own screen.
+   Below, the server log of every API call. Single dark look on purpose: it is the in-game UI. */
+:root {
+  color-scheme: dark;
+  /* RoPOS Theme.luau tokens */
+  --backdrop: #07080b;
+  --bg: #0d0f14;
+  --panel: #14171f;
+  --raised: #1c202b;
+  --raised-hover: #242937;
+  --border: #2c3242;
+  --text: #eceff5;
+  --muted: #9299aa;
+  --faint: #62697c;
+  --accent: #5c84ff;
+  --accent-hover: #7698ff;
+  --accent-soft: #222c4e;
+  --success: #2ecc71;
+  --success-ink: #08301c;
+  --success-soft: #163a29;
+  --warning: #f2ad3d;
+  --warning-soft: #42321e;
+  --danger: #eb5757;
+  --danger-soft: #461c20;
+  --paper: #faf8f2;
+  --ink: #1c1c20;
+  --stud: #10131a;
+
+  --ui: "Figtree", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Roboto Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --r-s: 8px;
+  --r-m: 12px;
+  --r-l: 16px;
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  margin: 0;
+  background-color: var(--backdrop);
+  background-image: radial-gradient(circle at 50% 50%, var(--stud) 0 5px, transparent 6px);
+  background-size: 28px 28px;
+  color: var(--text);
+  font: 500 15px/1.4 var(--ui);
+  padding: 20px 20px 40px;
+  -webkit-font-smoothing: antialiased;
+}
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; border: 0; background: none; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+.num, .money { font-variant-numeric: tabular-nums; }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+
+.wrap { max-width: 1480px; margin: 0 auto; display: grid; gap: 16px; }
+
+/* Top bar */
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.brand { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+.brand h1 { font-size: 22px; font-weight: 900; letter-spacing: -0.01em; }
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+.logo {
+  width: 42px; height: 42px; border-radius: var(--r-m); display: grid; place-items: center;
+  font-weight: 900; font-size: 20px; color: #fff;
+  background: linear-gradient(135deg, var(--accent-hover), #965cff);
+}
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.seg button { padding: 6px 14px; border-radius: 999px; color: var(--muted); font-weight: 700; font-size: 14px; }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
+.label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); font-weight: 700; }
+
+/* Stage */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+
+/* POS window */
+.window {
+  position: relative; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-l);
+  padding: 16px 20px 20px; min-height: 680px; display: flex; flex-direction: column; overflow: hidden;
+}
+.win-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.win-head .logo { width: 40px; height: 40px; font-size: 18px; }
+.win-title { margin-right: auto; min-width: 0; }
+.win-title b { display: block; font-size: 19px; font-weight: 900; }
+.win-title span { color: var(--muted); font-size: 13px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px; border-radius: 999px;
+  font-size: 13px; font-weight: 800; white-space: nowrap; background: var(--raised); color: var(--text);
+}
+.pill.ok { background: var(--success-soft); color: var(--success); }
+.pill.warn { background: var(--warning-soft); color: var(--warning); }
+.pill.bad { background: var(--danger-soft); color: var(--danger); }
+.pill.info { background: var(--accent-soft); color: var(--accent-hover); }
+.tabs { display: flex; gap: 6px; margin-top: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.tabs button { padding: 8px 14px; border-radius: var(--r-s); color: var(--muted); font-weight: 700; white-space: nowrap; }
+.tabs button:hover { background: var(--raised); }
+.tabs button[aria-selected="true"] { background: var(--accent-soft); color: var(--text); }
+.content { flex: 1; padding-top: 14px; min-height: 0; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 40px; padding: 0 16px;
+  border-radius: var(--r-s); font-weight: 800; background: var(--raised); border: 1px solid var(--border);
+  transition: background .15s, transform .08s;
+}
+.btn:hover { background: var(--raised-hover); }
+.btn:active { transform: scale(.97); }
+.btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.success { background: var(--success); border-color: transparent; color: var(--success-ink); }
+.btn.danger { background: var(--danger); border-color: transparent; color: #fff; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { background: var(--raised); color: var(--text); }
+.btn.small { height: 30px; padding: 0 10px; font-size: 13px; }
+.btn.chip { height: 32px; border-radius: 999px; font-size: 14px; }
+.btn[disabled] { background: var(--raised); color: var(--faint); border-color: var(--border); cursor: not-allowed; transform: none; }
+.input {
+  height: 42px; padding: 0 12px; border-radius: var(--r-s); background: var(--raised); border: 1px solid var(--border);
+  width: 100%; outline: none;
+}
+.input:focus { border-color: var(--accent); }
+.input::placeholder { color: var(--faint); }
+
+/* Closed register */
+.closed { display: grid; place-items: center; text-align: center; height: 100%; min-height: 520px; gap: 10px; align-content: center; }
+.closed .key {
+  width: 64px; height: 64px; border-radius: var(--r-m); background: var(--raised); border: 2px solid var(--border);
+  display: grid; place-items: center; font-size: 26px; font-weight: 900; margin: 0 auto 6px;
+  box-shadow: 0 4px 0 var(--border);
+}
+.closed p { color: var(--muted); margin: 0; max-width: 46ch; }
+
+/* Sell */
+.sell { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; height: 100%; }
+@media (max-width: 860px) { .sell { grid-template-columns: minmax(0, 1fr); } }
+.catalogue { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.chips .btn[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; }
+.tile {
+  position: relative; text-align: left; height: 112px; padding: 12px; border-radius: var(--r-m);
+  background: var(--raised); border: 1px solid var(--border); transition: background .15s, border-color .15s, transform .1s;
+  display: grid; grid-template-rows: 36px 1fr auto; gap: 6px;
+}
+.tile:hover { background: var(--raised-hover); }
+.tile:active { transform: scale(.96); }
+.tile.in { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.tile.out { opacity: .55; }
+.swatch {
+  width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+  color: #fff; font-weight: 900; text-shadow: 0 1px 2px rgba(0,0,0,.4);
+  background-image: linear-gradient(180deg, rgba(255,255,255,.18), rgba(0,0,0,.12));
+}
+.tile .name { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .price { font-weight: 900; font-size: 18px; color: var(--accent-hover); }
+.tile .stock { position: absolute; top: 12px; right: 10px; height: 22px; font-size: 12px; }
+.tile .qty { position: absolute; right: 10px; bottom: 10px; background: var(--accent); color: #fff; height: 22px; font-size: 12px; }
+
+.order {
+  position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-l);
+  padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 560px;
+}
+.order-head { display: flex; justify-content: space-between; align-items: center; }
+.order-head h3 { font-size: 17px; font-weight: 900; }
+.customer-btn { justify-content: flex-start; height: 46px; width: 100%; font-weight: 600; }
+.picker {
+  position: absolute; left: 14px; right: 14px; top: 104px; z-index: 5; background: var(--raised);
+  border: 1px solid var(--accent); border-radius: var(--r-m); padding: 8px; display: grid; gap: 4px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.45);
+}
+.picker button { text-align: left; padding: 9px 10px; border-radius: var(--r-s); display: flex; justify-content: space-between; gap: 8px; }
+.picker button:hover { background: var(--raised-hover); }
+.picker small { color: var(--muted); }
+.lines { flex: 1; overflow-y: auto; display: grid; gap: 6px; align-content: start; min-height: 120px; }
+.empty { color: var(--faint); text-align: center; padding: 36px 8px; }
+.line {
+  display: grid; grid-template-columns: 4px minmax(0, 1fr) auto 64px; gap: 10px; align-items: center;
+  background: var(--raised); border-radius: var(--r-m); padding: 8px 12px 8px 0;
+}
+.line .bar { height: 30px; border-radius: 0 2px 2px 0; }
+.line b { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.line small { color: var(--muted); }
+.line .total { text-align: right; font-weight: 800; }
+.stepper { display: flex; align-items: center; background: var(--panel); border-radius: var(--r-s); }
+.stepper button { width: 30px; height: 30px; border-radius: var(--r-s); font-weight: 900; color: var(--muted); }
+.stepper button:hover { background: var(--raised-hover); color: var(--text); }
+.stepper span { width: 28px; text-align: center; font-weight: 900; }
+.summary { border-top: 1px solid var(--border); padding-top: 10px; display: grid; gap: 6px; }
+.discounts { display: flex; gap: 6px; flex-wrap: wrap; }
+.discounts .btn { height: 30px; padding: 0 10px; font-size: 13px; }
+.discounts .btn[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+.row { display: flex; justify-content: space-between; color: var(--muted); }
+.row.total { color: var(--text); font-weight: 900; font-size: 20px; align-items: baseline; }
+.row.total .money { font-size: 28px; }
+.charge { height: 54px; width: 100%; font-size: 18px; border-radius: var(--r-m); margin-top: 4px; }
+
+.waiting {
+  position: absolute; inset: 0; z-index: 6; background: color-mix(in srgb, var(--panel) 96%, transparent);
+  border-radius: var(--r-l); display: grid; place-content: center; text-align: center; gap: 12px; padding: 28px;
+}
+.waiting .hour { width: 72px; height: 72px; border-radius: 50%; background: var(--accent-soft); margin: 0 auto; display: grid; place-items: center; font-size: 30px; }
+.waiting h3 { font-size: 21px; font-weight: 900; }
+.waiting .money { font-size: 40px; font-weight: 900; }
+.waiting p { color: var(--muted); margin: 0; font-size: 14px; }
+.countdown { height: 6px; border-radius: 999px; background: var(--raised); overflow: hidden; }
+.countdown i { display: block; height: 100%; width: 100%; background: var(--accent); border-radius: inherit; transform-origin: left; }
+
+/* Lists */
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+.toolbar h2 { font-size: 22px; font-weight: 900; margin-right: auto; }
+.list { display: grid; gap: 6px; }
+.sale-row {
+  display: grid; grid-template-columns: 110px 130px minmax(0, 1fr) 60px 80px 100px; gap: 10px; align-items: center;
+  background: var(--raised); border-radius: var(--r-m); padding: 12px 14px; text-align: left; width: 100%;
+}
+.sale-row:hover { background: var(--raised-hover); }
+.sale-row .receipt { font: 700 13px var(--mono); }
+.sale-row .muted { color: var(--muted); }
+.sale-row > :nth-child(n+4) { text-align: right; }
+.sale-row .pill { justify-self: end; }
+@media (max-width: 760px) {
+  .sale-row { grid-template-columns: 1fr auto; }
+  .sale-row > :nth-child(2), .sale-row > :nth-child(4) { display: none; }
+  .sale-row > :nth-child(3) { grid-column: 1 / -1; order: 3; }
+}
+.head-row { background: none; padding-block: 0; color: var(--faint); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.head-row:hover { background: none; }
+
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 760px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat { background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-m); padding: 14px 16px; }
+.stat span { color: var(--muted); font-size: 14px; }
+.stat b { display: block; font-size: 28px; font-weight: 900; margin-top: 2px; }
+.card { background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-m); padding: 16px; display: grid; gap: 10px; }
+.card h3 { font-size: 16px; font-weight: 800; }
+.rank { display: grid; grid-template-columns: minmax(0, 1fr) 2fr auto; gap: 12px; align-items: center; }
+.rank .track { height: 10px; background: var(--panel); border-radius: 999px; overflow: hidden; }
+.rank .track i { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .5s cubic-bezier(.2,.8,.2,1); }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 760px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.stack { display: grid; gap: 14px; }
+
+.chart { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; height: 220px; align-items: end; padding-top: 6px; }
+.chart .col { display: grid; grid-template-rows: 20px 1fr 22px; height: 100%; text-align: center; gap: 4px; }
+.chart .val { font-size: 12px; font-weight: 800; color: var(--muted); white-space: nowrap; }
+.chart .plot { position: relative; border-bottom: 1px solid var(--border); }
+.chart .plot i {
+  position: absolute; bottom: 0; left: 15%; right: 15%; border-radius: 6px 6px 0 0;
+  background: linear-gradient(180deg, var(--accent-soft), color-mix(in srgb, var(--accent-soft) 60%, transparent));
+  transition: height .6s cubic-bezier(.2,.8,.2,1);
+}
+.chart .today i { background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent)); }
+.chart .today .val, .chart .today .day { color: var(--text); }
+.chart .day { font-size: 13px; color: var(--muted); }
+
+.product-row {
+  display: grid; grid-template-columns: 28px minmax(0, 1.3fr) 130px minmax(0, 1.4fr) 100px; gap: 12px; align-items: center;
+  background: var(--raised); border-radius: var(--r-m); padding: 10px 14px;
+}
+.product-row.off { opacity: .55; }
+.product-row .dot { width: 28px; height: 28px; border-radius: 8px; }
+.product-row small { color: var(--muted); display: block; }
+.price-edit { display: flex; align-items: center; gap: 6px; }
+.price-edit .input { height: 36px; text-align: right; }
+.stock-edit { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.stock-edit b { width: 44px; text-align: center; font-size: 17px; }
+@media (max-width: 760px) {
+  .product-row { grid-template-columns: 28px minmax(0, 1fr) auto; }
+  .product-row .stock-edit, .product-row .price-edit { grid-column: 2 / -1; }
+}
+
+.audit-row { display: grid; grid-template-columns: 120px 70px 120px minmax(0, 1fr); gap: 10px; align-items: center; background: var(--raised); border-radius: var(--r-s); padding: 9px 12px; font-size: 14px; }
+.audit-row time { font-family: var(--mono); color: var(--muted); font-size: 13px; }
+@media (max-width: 760px) { .audit-row { grid-template-columns: 1fr auto; } .audit-row > :last-child { grid-column: 1 / -1; } }
+
+/* World column */
+.world { display: grid; gap: 16px; }
+.screen-mount { background: #23262e; border-radius: var(--r-l); padding: 18px 18px 0; border: 1px solid var(--border); }
+.screen-mount .label { margin-bottom: 10px; display: block; }
+.screen {
+  position: relative; background: #0b0d11; border-radius: 10px; aspect-ratio: 13 / 8; max-width: 100%;
+  padding: 7% 7% 6%; display: grid; grid-template-rows: auto auto auto 1fr; overflow: hidden;
+  box-shadow: inset 0 0 0 3px #000, 0 0 40px color-mix(in srgb, var(--screen-accent, var(--faint)) 22%, transparent);
+  --screen-accent: var(--faint);
+}
+.screen::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 5%; background: var(--screen-accent); transition: background .35s; }
+.screen .store { color: var(--muted); font-weight: 900; letter-spacing: .08em; font-size: clamp(11px, 1.1vw, 14px); }
+.screen .status { font-weight: 900; font-size: clamp(24px, 2.6vw, 34px); line-height: 1.1; margin-top: 4px; }
+.screen .detail { color: var(--muted); font-weight: 600; font-size: clamp(13px, 1.2vw, 16px); }
+.screen .amount { align-self: end; justify-self: end; font: 700 clamp(26px, 3vw, 40px) var(--mono); }
+.stand { width: 18%; height: 26px; margin: 0 auto; background: #2c3242; border-radius: 0 0 4px 4px; }
+
+.phone { background: var(--panel); border: 1px solid var(--border); border-radius: 28px; padding: 14px; display: grid; gap: 12px; position: relative; min-height: 470px; align-content: start; }
+.phone-head { display: flex; align-items: center; gap: 10px; }
+.phone-head .seg { margin-left: auto; }
+.avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-weight: 900; color: #fff; }
+.wallet { display: flex; justify-content: space-between; align-items: center; background: var(--raised); border-radius: var(--r-m); padding: 10px 14px; }
+.wallet b { font-size: 22px; font-weight: 900; }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--raised); border-radius: var(--r-m); padding: 10px 14px; }
+.toggle small { color: var(--muted); display: block; }
+.switch { width: 46px; height: 26px; border-radius: 999px; background: var(--border); position: relative; transition: background .2s; flex: none; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.switch[aria-checked="true"] { background: var(--success); }
+.switch[aria-checked="true"]::after { transform: translateX(20px); }
+.backpack { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
+.backpack .pill { font-weight: 700; }
+.phone .hint { color: var(--faint); font-size: 13px; margin: 0; }
+
+.pay {
+  position: absolute; inset: 0; z-index: 4; border-radius: 28px; background: color-mix(in srgb, #000 55%, transparent);
+  display: grid; align-items: center; padding: 14px; animation: fade .2s;
+}
+.pay-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-l); padding: 18px; display: grid; gap: 12px; animation: pop .35s cubic-bezier(.2,.9,.3,1.2); }
+.pay-card header { display: flex; gap: 12px; align-items: center; }
+.pay-card header .hour { width: 46px; height: 46px; border-radius: var(--r-m); background: var(--accent-soft); display: grid; place-items: center; font-size: 22px; flex: none; }
+.pay-card h3 { font-size: 20px; font-weight: 900; }
+.pay-card header p { margin: 0; color: var(--muted); font-size: 13px; }
+.bill { background: var(--raised); border-radius: var(--r-m); padding: 6px 12px; max-height: 170px; overflow-y: auto; }
+.bill div { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+.bill .money { font-family: var(--mono); }
+.pay-actions { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; }
+.pay-actions .btn { height: 48px; }
+.balance { font-size: 13px; color: var(--muted); }
+.balance.short { color: var(--danger); }
+
+/* Dialog + receipt */
+.dialog-back { position: fixed; inset: 0; z-index: 40; background: color-mix(in srgb, #000 60%, transparent); display: grid; place-items: center; padding: 16px; animation: fade .2s; }
+.dialog { width: min(420px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-l); padding: 20px; display: grid; gap: 12px; animation: pop .3s cubic-bezier(.2,.9,.3,1.1); }
+.dialog h3 { font-size: 21px; font-weight: 900; }
+.dialog p { margin: 0; color: var(--muted); }
+.dialog .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+.paper {
+  position: relative; background: var(--paper); color: var(--ink); border-radius: 6px; padding: 18px 18px 22px;
+  font: 400 13px/1.45 var(--mono); white-space: pre; overflow-x: auto;
+  -webkit-mask: radial-gradient(circle 6px at 50% 100%, transparent 98%, #000) 0 0 / 16px 100% repeat-x;
+          mask: radial-gradient(circle 6px at 50% 100%, transparent 98%, #000) 0 0 / 16px 100% repeat-x;
+}
+.paper b { font-weight: 700; }
+.stamp {
+  position: absolute; top: 42%; left: 50%; transform: translate(-50%, -50%) rotate(-14deg);
+  border: 3px solid var(--danger); color: var(--danger); font: 900 34px var(--ui); padding: 2px 14px; border-radius: 6px; opacity: .85;
+}
+
+/* Toasts */
+.toasts { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 60; display: grid; gap: 8px; justify-items: center; pointer-events: none; width: min(440px, calc(100% - 32px)); }
+.toast { display: flex; gap: 10px; align-items: center; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-m); padding: 10px 16px 10px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.4); animation: pop .3s cubic-bezier(.2,.9,.3,1.2); }
+.toast i { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-weight: 900; font-size: 13px; color: var(--bg); flex: none; }
+.toast.info i { background: var(--accent); } .toast.success i { background: var(--success); }
+.toast.warning i { background: var(--warning); } .toast.error i { background: var(--danger); }
+.toast.success { border-color: color-mix(in srgb, var(--success) 50%, var(--border)); }
+.toast.error { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
+
+/* Server log + guide */
+.below { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; }
+@media (max-width: 1100px) { .below { grid-template-columns: minmax(0, 1fr); } }
+.log { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-l); padding: 14px 16px; }
+.log header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.log ol { list-style: none; margin: 0; padding: 0; max-height: 230px; overflow-y: auto; font: 13px/1.6 var(--mono); }
+.log li { display: grid; grid-template-columns: 70px 50px minmax(0, 1fr); gap: 10px; border-bottom: 1px dashed var(--border); padding: 3px 0; }
+.log li > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.log .who { color: var(--accent-hover); }
+.log .okay { color: var(--success); } .log .fail { color: var(--danger); } .log .push { color: var(--warning); }
+.guide { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-l); padding: 14px 16px; }
+.guide ol { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); }
+.guide b { color: var(--text); }
+
+@keyframes pop { from { transform: scale(.92); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes fade { from { opacity: 0; } }
+@keyframes shrink { from { transform: scaleX(1); background: var(--accent); } to { transform: scaleX(0); background: var(--warning); } }
+@keyframes bump { 50% { transform: scale(1.06); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">B</div>
+      <div>
+        <h1>RoPOS Simulator</h1>
+        <p>Try the Roblox point of sale in your browser. You play the staff on the left and the customers on the right.</p>
+      </div>
+    </div>
+    <div class="controls">
+      <span class="label">Playing as</span>
+      <div class="seg" role="group" aria-label="Staff member" id="staffSeg"></div>
+      <button class="btn small ghost" id="resetBtn" type="button">Reset</button>
+    </div>
+  </header>
+
+  <section class="stage">
+    <div class="window" id="window" aria-label="POS window"></div>
+    <aside class="world">
+      <div class="screen-mount">
+        <span class="label">Customer screen on the till</span>
+        <div class="screen" id="screen" aria-live="polite"></div>
+        <div class="stand" aria-hidden="true"></div>
+      </div>
+      <div class="phone" id="phone" aria-label="Customer's screen"></div>
+    </aside>
+  </section>
+
+  <section class="below">
+    <div class="log">
+      <header><span class="label">Server log: every API call and push</span><button class="btn small ghost" id="clearLog" type="button">Clear</button></header>
+      <ol id="log"></ol>
+    </div>
+    <div class="guide">
+      <span class="label">Things to try</span>
+      <ol>
+        <li><b>Use register</b>, then <b>Open shift</b> on the Shift tab.</li>
+        <li>Add items, choose <b>Bob</b> and press <b>Charge</b>. Pay on Bob's screen.</li>
+        <li>Charge Eve while she is away from the counter, then switch her <b>At the counter</b> on.</li>
+        <li>Charge 2 gift cards: Bob can't afford 500.</li>
+        <li>Switch to <b>Cass</b>: discounts stop at 10% and the manager tabs disappear.</li>
+        <li>As Ann, change a price while a payment is waiting, then pay.</li>
+        <li>Refund a sale on the Sales tab, then try to refund it again.</li>
+        <li>Close the shift for the Z report.</li>
+      </ol>
+    </div>
+  </section>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div id="dialogRoot"></div>
+
+<script>
+"use strict";
+/* ============================================================================
+   RoPOS Simulator. The "server" half below mirrors src/server (same rules and the same
+   error messages); priceLines is identical to public/js/pricing.js and src/shared/Pricing.luau.
+   The real Luau code is tested end to end by tests/simulate.luau.
+   ========================================================================== */
+
+const CONFIG = {
+  store: { name: "Brickbrew Café", prefix: "BB", footer: "Thanks for visiting. See you soon!" },
+  currency: { stat: "Cash", symbol: "$", start: 500 },
+  tax: { enabled: false, name: "Sales tax", inclusive: true },
+  discounts: { presets: [0, 5, 10, 15, 25, 50], cashierMax: 10, managerMax: 100 },
+  checkout: { customerRange: 16, timeout: 30, maxLines: 20, maxQty: 20 },
+  lowStockAt: 5,
+  categories: ["Coffee", "Tea & Cold", "Bakery", "Merch"],
+};
+const SEED = [
+  { id: "espresso", name: "Espresso", category: "Coffee", price: 15, taxRate: 20, colour: "#5c3c28", tool: true },
+  { id: "latte", name: "Caramel Latte", category: "Coffee", price: 28, taxRate: 20, colour: "#c99663", tool: true },
+  { id: "flatwhite", name: "Flat White", category: "Coffee", price: 24, taxRate: 20, colour: "#e2c4a0", tool: true },
+  { id: "mocha", name: "Mocha", category: "Coffee", price: 30, taxRate: 20, colour: "#784830", tool: true },
+  { id: "matcha", name: "Matcha Latte", category: "Tea & Cold", price: 32, taxRate: 20, colour: "#81b25c", tool: true },
+  { id: "icedtea", name: "Peach Iced Tea", category: "Tea & Cold", price: 18, taxRate: 20, colour: "#f5a662", tool: true },
+  { id: "smoothie", name: "Berry Smoothie", category: "Tea & Cold", price: 35, taxRate: 20, colour: "#c44478", tool: true },
+  { id: "croissant", name: "Butter Croissant", category: "Bakery", price: 20, taxRate: 0, stock: 30, colour: "#e8b252", tool: true },
+  { id: "cookie", name: "Choc Chip Cookie", category: "Bakery", price: 12, taxRate: 0, stock: 40, colour: "#b07846", tool: true },
+  { id: "muffin", name: "Blueberry Muffin", category: "Bakery", price: 22, taxRate: 0, stock: 24, colour: "#6e62aa", tool: true },
+  { id: "bagel", name: "Everything Bagel", category: "Bakery", price: 26, taxRate: 0, stock: 4, colour: "#cda06e", tool: true },
+  { id: "mug", name: "Brickbrew Mug", category: "Merch", price: 120, taxRate: 20, stock: 10, colour: "#e6e6e6", tool: true },
+  { id: "beans", name: "House Beans 250 g", category: "Merch", price: 90, taxRate: 0, stock: 15, colour: "#462d1e", tool: false },
+  { id: "giftcard", name: "Gift Card", category: "Merch", price: 250, taxRate: 0, colour: "#5882ff", tool: false },
+];
+const ROLES = { Customer: 0, Cashier: 1, Manager: 2 };
+const PEOPLE = {
+  ann: { id: 1, key: "ann", name: "Ann", role: ROLES.Manager, colour: "#965cff" },
+  cass: { id: 2, key: "cass", name: "Cass", role: ROLES.Cashier, colour: "#2e9e8a" },
+  bob: { id: 3, key: "bob", name: "Bob", role: ROLES.Customer, colour: "#d9643a" },
+  eve: { id: 5, key: "eve", name: "Eve", role: ROLES.Customer, colour: "#c2448a" },
+};
+
+/* ---------------------------------------------------------------- shared */
+
+function priceLines(lines, { discountPct = 0, taxInclusive = true } = {}) {
+  const pct = Math.min(Math.max(Number(discountPct) || 0, 0), 100);
+  let subtotal = 0, discount = 0, tax = 0, total = 0;
+  const out = lines.map((line) => {
+    const gross = line.unitPrice * line.qty;
+    const lineDiscount = Math.round((gross * pct) / 100);
+    const net = gross - lineDiscount;
+    const rate = Number(line.taxRate) || 0;
+    const lineTax = taxInclusive ? Math.round((net * rate) / (100 + rate)) : Math.round((net * rate) / 100);
+    const lineTotal = taxInclusive ? net : net + lineTax;
+    subtotal += gross; discount += lineDiscount; tax += lineTax; total += lineTotal;
+    return { ...line, discount: lineDiscount, tax: lineTax, total: lineTotal };
+  });
+  return { lines: out, subtotal, discount, tax, total };
+}
+
+const money = (n) => (n < 0 ? "-" : "") + CONFIG.currency.symbol + Math.abs(n).toLocaleString("en-GB");
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (t) => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const dateTime = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock(t)}`; };
+const dayKey = (t) => new Date(t).toISOString().slice(0, 10);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const row = (left, right, width = 34) => {
+  let space = width - left.length - right.length;
+  if (space < 1) { left = left.slice(0, Math.max(1, width - right.length - 2)) + "…"; space = Math.max(1, width - left.length - right.length); }
+  return left + " ".repeat(space) + right;
+};
+
+function newAggregate() {
+  return { count: 0, items: 0, gross: 0, discounts: 0, tax: 0, sales: 0, refunds: 0, refundCount: 0, products: {}, cashiers: {} };
+}
+function addSale(agg, sale) {
+  agg.count++; agg.gross += sale.subtotal; agg.discounts += sale.discount; agg.tax += sale.tax; agg.sales += sale.total;
+  for (const l of sale.lines) {
+    agg.items += l.qty;
+    const p = (agg.products[l.productId] ??= { name: l.name, qty: 0, total: 0 });
+    p.qty += l.qty; p.total += l.total;
+  }
+  const c = (agg.cashiers[sale.cashier.name] ??= { count: 0, total: 0 });
+  c.count++; c.total += sale.total;
+}
+function addRefund(agg, sale) { agg.refunds += sale.total; agg.refundCount++; }
+function mergeAgg(into, d) {
+  for (const k of ["count", "items", "gross", "discounts", "tax", "sales", "refunds", "refundCount"]) into[k] += d[k];
+  for (const [id, p] of Object.entries(d.products)) { const t = (into.products[id] ??= { name: p.name, qty: 0, total: 0 }); t.qty += p.qty; t.total += p.total; }
+  for (const [n, c] of Object.entries(d.cashiers)) { const t = (into.cashiers[n] ??= { count: 0, total: 0 }); t.count += c.count; t.total += c.total; }
+  return into;
+}
+const net = (agg) => agg.sales - agg.refunds;
+const topProducts = (agg, n) => Object.entries(agg.products).map(([id, p]) => ({ id, ...p })).sort((a, b) => b.total - a.total || a.id.localeCompare(b.id)).slice(0, n);
+const topCashiers = (agg, n) => Object.entries(agg.cashiers).map(([name, c]) => ({ name, ...c })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)).slice(0, n);
+
+/* ---------------------------------------------------------------- server */
+
+class ApiError extends Error {}
+// Reads the screens make on every redraw; left out of the server log to keep it readable.
+const QUIET = new Set(["register.preview", "sales.recent", "reports.days", "audit.recent"]);
+const fail = (message) => { throw new ApiError(message); };
+
+const server = {
+  reset() {
+    this.products = Object.fromEntries(SEED.map((p) => [p.id, { ...p, active: true }]));
+    this.wallets = { bob: CONFIG.currency.start, eve: CONFIG.currency.start };
+    this.backpacks = { bob: [], eve: [] };
+    this.atCounter = { bob: true, eve: false };
+    this.counter = 0;
+    this.sales = [];
+    this.register = { name: "Front Counter", operator: null, shift: null, order: null, preview: null, flashUntil: 0 };
+    this.audit = [];
+    this.days = seedDays();
+  },
+
+  audit_(actor, action, detail) { this.audit.unshift({ t: Date.now(), actor: actor.name, action, detail }); },
+  maxDiscount(p) { return p.role >= ROLES.Manager ? CONFIG.discounts.managerMax : CONFIG.discounts.cashierMax; },
+  catalogue() { return SEED.map((s) => ({ ...this.products[s.id] })); },
+  summary() {
+    const r = this.register;
+    return { name: r.name, operator: r.operator?.name ?? null, shift: r.shift ? this.shiftReport(r.shift) : null };
+  },
+  shiftReport(shift) {
+    const t = shift.totals;
+    return { id: shift.id, openedAt: shift.openedAt, openedBy: shift.openedBy, totals: t, net: net(t),
+      average: t.count ? Math.round(t.sales / t.count) : 0, topProducts: topProducts(t, 5), cashiers: topCashiers(t, 10) };
+  },
+  myRegister(p) { if (this.register.operator !== p) fail("Open a register first"); return this.register; },
+
+  price(cart, discountPct) {
+    const lines = cart.map((line) => {
+      const product = this.products[line.productId];
+      if (!product || !product.active) fail(`${product ? product.name : "An item"} is not available any more`);
+      if (product.stock != null && line.qty > product.stock) {
+        fail(product.stock === 0 ? `${product.name} is sold out` : `Only ${product.stock} ${product.name} left`);
+      }
+      return { productId: product.id, name: product.name, unitPrice: product.price, qty: line.qty,
+        taxRate: CONFIG.tax.enabled ? product.taxRate : 0 };
+    });
+    return priceLines(lines, { discountPct, taxInclusive: CONFIG.tax.inclusive });
+  },
+
+  validateCart(raw) {
+    if (!Array.isArray(raw)) fail("Invalid cart");
+    const merged = new Map();
+    for (const line of raw) {
+      if (typeof line?.productId !== "string" || !Number.isInteger(line.qty) || line.qty < 1 || line.qty > CONFIG.checkout.maxQty) fail("Invalid cart line");
+      merged.set(line.productId, (merged.get(line.productId) ?? 0) + line.qty);
+    }
+    if (merged.size === 0) fail("The order is empty");
+    if (merged.size > CONFIG.checkout.maxLines) fail(`An order can have at most ${CONFIG.checkout.maxLines} different items`);
+    return [...merged].map(([productId, qty]) => {
+      if (qty > CONFIG.checkout.maxQty) fail(`You can sell at most ${CONFIG.checkout.maxQty} of one item`);
+      return { productId, qty };
+    });
+  },
+
+  finish(order, status, reason) {
+    if (order.status !== "pending") return;
+    order.status = status;
+    clearTimeout(order.timer);
+    this.register.order = null;
+    push(order.operator, "OrderUpdate", { orderId: order.id, status, reason });
+    push(order.customer, "PaymentClosed", { orderId: order.id, reason });
+  },
+
+  release(reason) {
+    const r = this.register;
+    if (!r.operator) return;
+    if (r.order) this.finish(r.order, "cancelled", reason ?? "The register was closed");
+    const op = r.operator;
+    r.operator = null; r.preview = null;
+    push(op, "CloseRegister", { reason });
+  },
+
+  handlers: {
+    "register.use": [ROLES.Cashier, function (p) {
+      const r = this.register;
+      if (r.operator && r.operator !== p) fail(`${r.name} is being used by ${r.operator.name}`);
+      r.operator = p;
+      push(p, "OpenRegister", this.summary());
+    }],
+    "register.leave": [ROLES.Cashier, function (p) { if (this.register.operator === p) this.release(null); }],
+    "register.preview": [ROLES.Cashier, function (p, cart, discount) {
+      const r = this.myRegister(p);
+      if (r.order) return;
+      try {
+        const c = this.validateCart(cart);
+        const totals = this.price(c, Math.min(discount, this.maxDiscount(p)));
+        r.preview = { items: c.reduce((n, l) => n + l.qty, 0), total: totals.total };
+      } catch { r.preview = null; }
+    }],
+    "register.customers": [ROLES.Cashier, function (p) {
+      this.myRegister(p);
+      return ["bob", "eve"].map((k) => ({ key: k, name: PEOPLE[k].name, distance: this.atCounter[k] ? 3 : 41, near: this.atCounter[k] }));
+    }],
+    "shift.open": [ROLES.Cashier, function (p) {
+      const r = this.myRegister(p);
+      if (r.shift) fail(`A shift is already open on ${r.name}`);
+      r.shift = { id: Math.random().toString(16).slice(2, 10).toUpperCase(), openedAt: Date.now(), openedBy: p.name, totals: newAggregate() };
+      this.audit_(p, "shift.open", r.name);
+      return this.summary();
+    }],
+    "shift.report": [ROLES.Cashier, function (p) { this.myRegister(p); return this.summary(); }],
+    "shift.close": [ROLES.Cashier, function (p) {
+      const r = this.myRegister(p);
+      if (!r.shift) fail("No shift is open");
+      if (r.order) fail("Finish or cancel the waiting payment first");
+      const z = { ...this.shiftReport(r.shift), closedAt: Date.now(), closedBy: p.name };
+      r.shift = null;
+      this.audit_(p, "shift.close", `${r.name}: ${z.totals.count} sales, net ${money(z.net)}`);
+      return z;
+    }],
+    "checkout.start": [ROLES.Cashier, function (p, cart, discountPct, customerKey) {
+      const r = this.myRegister(p);
+      if (!r.shift) fail("Open a shift before taking payments");
+      if (r.order) fail("This register is already waiting for a payment");
+      const c = this.validateCart(cart);
+      if (!Number.isInteger(discountPct) || discountPct < 0 || discountPct > 100) fail("Invalid discount");
+      if (discountPct > this.maxDiscount(p)) fail(`Your discount limit is ${this.maxDiscount(p)}%`);
+      const customer = PEOPLE[customerKey];
+      if (!customer || customer.role !== ROLES.Customer) fail("Choose a customer");
+      if (!this.atCounter[customer.key]) fail(`${customer.name} needs to stand at the register`);
+      const totals = this.price(c, discountPct);
+      const order = { id: crypto.randomUUID?.() ?? String(Math.random()), operator: p, customer, cart: c, discountPct, totals, status: "pending",
+        expiresAt: Date.now() + CONFIG.checkout.timeout * 1000 };
+      order.timer = setTimeout(() => { this.finish(order, "expired", `${customer.name} did not respond in time`); render(); }, CONFIG.checkout.timeout * 1000);
+      r.order = order;
+      push(customer, "PaymentRequest", { id: order.id, cashier: p.name, registerName: r.name, lines: totals.lines, subtotal: totals.subtotal,
+        discount: totals.discount, discountPct, tax: totals.tax, total: totals.total, expiresAt: order.expiresAt });
+      return { orderId: order.id, total: totals.total, customer: customer.name, expiresAt: order.expiresAt };
+    }],
+    "checkout.cancel": [ROLES.Cashier, function (p, orderId) {
+      const o = this.register.order;
+      if (!o || o.id !== orderId || o.operator !== p) fail("That payment is no longer waiting");
+      this.finish(o, "cancelled", "The cashier cancelled the payment");
+    }],
+    "checkout.expire": [ROLES.Cashier, function (p, orderId) {
+      // Simulator only: skip the 30 s wait.
+      const o = this.register.order;
+      if (o && o.id === orderId) this.finish(o, "expired", `${o.customer.name} did not respond in time`);
+    }],
+    "checkout.respond": [ROLES.Customer, function (p, orderId, accept) {
+      const o = this.register.order;
+      if (!o || o.id !== orderId || o.customer !== p || o.status !== "pending") fail("This payment is no longer available");
+      if (accept !== true) { this.finish(o, "declined", `${p.name} declined the payment`); return { status: "declined" }; }
+      let repriced = null;
+      try { repriced = this.price(o.cart, o.discountPct); } catch {}
+      if (!repriced || repriced.total !== o.totals.total) {
+        this.finish(o, "cancelled", "Prices or stock changed. Ring up the order again.");
+        fail("Prices or stock changed. The cashier needs to ring this up again.");
+      }
+      if (this.wallets[p.key] < o.totals.total) fail(`You don't have enough ${CONFIG.currency.stat}`);
+      // Debit and stock in one step, as on the real server.
+      this.wallets[p.key] -= o.totals.total;
+      o.status = "paid"; clearTimeout(o.timer); this.register.order = null;
+      for (const l of o.totals.lines) { const prod = this.products[l.productId]; if (prod.stock != null) prod.stock = Math.max(0, prod.stock - l.qty); }
+      const r = this.register;
+      const sale = { receipt: `${CONFIG.store.prefix}-${String(++this.counter).padStart(6, "0")}`, t: Date.now(), registerName: r.name,
+        cashier: { name: o.operator.name }, customer: { key: p.key, name: p.name },
+        lines: o.totals.lines.map((l) => ({ productId: l.productId, name: l.name, qty: l.qty, unitPrice: l.unitPrice, discount: l.discount, tax: l.tax, total: l.total })),
+        discountPct: o.discountPct, subtotal: o.totals.subtotal, discount: o.totals.discount, tax: o.totals.tax, total: o.totals.total, refunded: null };
+      this.sales.unshift(sale);
+      if (r.shift) addSale(r.shift.totals, sale);
+      addSale(this.today(), sale);
+      for (const l of sale.lines) if (this.products[l.productId].tool) for (let i = 0; i < l.qty; i++) this.backpacks[p.key].push(l.name);
+      r.preview = null; r.flashUntil = Date.now() + 4000; setTimeout(render, 4100);
+      if (o.discountPct > 0) this.audit_(o.operator, "discount", `${sale.receipt}: ${o.discountPct}% (${money(sale.discount)} off)`);
+      this.audit_(o.operator, "sale", `${sale.receipt}: ${money(sale.total)} to ${p.name}`);
+      push(o.operator, "OrderUpdate", { orderId: o.id, status: "paid", sale });
+      push(p, "Receipt", sale);
+      return { status: "paid", receipt: sale.receipt };
+    }],
+    "sales.recent": [ROLES.Cashier, function () { return this.sales.slice(0, 100); }],
+    "sales.get": [ROLES.Cashier, function (p, receipt) {
+      const sale = this.sales.find((s) => s.receipt === String(receipt).trim().toUpperCase());
+      if (!sale) fail("Receipt not found");
+      return sale;
+    }],
+    "sales.refund": [ROLES.Manager, function (p, receipt, restock) {
+      const sale = this.sales.find((s) => s.receipt === receipt);
+      if (!sale) fail("Receipt not found");
+      if (sale.refunded) fail("This sale has already been refunded");
+      sale.refunded = { t: Date.now(), by: p.name, restocked: !!restock };
+      this.wallets[sale.customer.key] += sale.total;
+      if (restock) for (const l of sale.lines) { const prod = this.products[l.productId]; if (prod.stock != null) prod.stock += l.qty; }
+      addRefund(this.today(), sale);
+      if (this.register.operator === p && this.register.shift) addRefund(this.register.shift.totals, sale);
+      this.audit_(p, "refund", `${sale.receipt}: ${money(sale.total)} to ${sale.customer.name}${restock ? ", restocked" : ""}`);
+      push(PEOPLE[sale.customer.key], "Toast", { text: `You were refunded ${money(sale.total)} for ${sale.receipt}`, kind: "success" });
+      return sale;
+    }],
+    "products.price": [ROLES.Manager, function (p, id, price) {
+      const item = this.products[id] ?? fail("Product not found");
+      if (!Number.isInteger(price) || price < 0) fail("Enter a whole number price");
+      if (price !== item.price) { this.audit_(p, "product.price", `${item.name}: ${money(item.price)} -> ${money(price)}`); item.price = price; }
+    }],
+    "products.stock": [ROLES.Manager, function (p, id, delta) {
+      const item = this.products[id] ?? fail("Product not found");
+      if (!Number.isInteger(delta) || delta === 0) fail("Invalid stock change");
+      if (item.stock == null) fail(`${item.name} is not stock-tracked`);
+      this.audit_(p, "stock.adjust", `${item.name}: ${delta > 0 ? "+" : ""}${delta} (was ${item.stock})`);
+      item.stock = Math.max(0, item.stock + delta);
+    }],
+    "products.active": [ROLES.Manager, function (p, id, active) {
+      const item = this.products[id] ?? fail("Product not found");
+      this.audit_(p, "product.active", item.name + (active ? " on sale" : " taken off sale"));
+      item.active = !!active;
+    }],
+    "reports.days": [ROLES.Manager, function () {
+      const out = [];
+      for (let i = 6; i >= 0; i--) {
+        const t = Date.now() - i * 86400000;
+        out.push({ label: i === 0 ? "Today" : new Date(t).toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" }), sample: i > 0, totals: this.days[dayKey(t)] ?? newAggregate() });
+      }
+      return out;
+    }],
+    "audit.recent": [ROLES.Manager, function () { return this.audit.slice(0, 200); }],
+  },
+
+  today() { return (this.days[dayKey(Date.now())] ??= newAggregate()); },
+
+  call(player, action, ...args) {
+    const handler = this.handlers[action];
+    let res;
+    if (!handler) res = { ok: false, error: "Unknown action" };
+    else if (player.role < handler[0]) res = { ok: false, error: "You don't have permission to do that" };
+    else {
+      try { res = { ok: true, data: handler[1].call(this, player, ...structuredClone(args)) }; }
+      catch (e) { res = e instanceof ApiError ? { ok: false, error: e.message } : (console.error(e), { ok: false, error: "Something went wrong. Try again." }); }
+    }
+    if (!QUIET.has(action) || !res.ok) log(player, action, res);
+    return res;
+  },
+};
+
+// Earlier days are sample data so the 7-day chart has something to show.
+function seedDays() {
+  const days = {};
+  const pattern = [[9, ["latte", 5], ["cookie", 4], ["croissant", 3]], [14, ["latte", 7], ["mocha", 3], ["muffin", 4]], [11, ["flatwhite", 5], ["bagel", 2]],
+    [18, ["latte", 9], ["smoothie", 4], ["cookie", 6]], [22, ["mocha", 6], ["matcha", 5], ["mug", 1]], [16, ["latte", 6], ["icedtea", 6], ["croissant", 4]]];
+  pattern.forEach(([count, ...items], index) => {
+    const agg = newAggregate();
+    const t = Date.now() - (6 - index) * 86400000;
+    for (let i = 0; i < count; i++) {
+      const [id, qty] = items[i % items.length];
+      const p = SEED.find((s) => s.id === id);
+      const q = Math.max(1, Math.round(qty / 3));
+      addSale(agg, { cashier: { name: i % 3 ? "Cass" : "Ann" }, lines: [{ productId: id, name: p.name, qty: q, total: p.price * q }], subtotal: p.price * q, discount: 0, tax: 0, total: p.price * q });
+    }
+    if (index === 3) addRefund(agg, { total: 28 });
+    days[dayKey(t)] = agg;
+  });
+  return days;
+}
+
+/* ---------------------------------------------------------------- client */
+
+const ui = {
+  staff: "ann", tab: "sell", cart: [], discount: 0, customer: null, pending: null, category: "All", query: "",
+  picker: null, phoneFor: "bob", incoming: {}, receiptFor: {}, reports: null,
+};
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const me = () => PEOPLE[ui.staff];
+
+function push(player, kind, payload) {
+  log(player, kind, null, true);
+  const handlers = {
+    OpenRegister() { ui.tab = "sell"; },
+    CloseRegister(p) { ui.pending = null; ui.picker = null; if (p?.reason) toast(p.reason); },
+    OrderUpdate(u) {
+      if (!ui.pending || ui.pending.orderId !== u.orderId) return;
+      ui.pending = null;
+      if (u.status === "paid") {
+        toast(`Paid ${money(u.sale.total)} · ${u.sale.receipt}`, "success");
+        ui.cart = []; ui.discount = 0; ui.customer = null;
+        queueMicrotask(() => showReceipt(u.sale));
+      } else toast(u.reason || "Payment was not completed", "warning");
+    },
+    PaymentRequest(o) { ui.incoming[player.key] = o; ui.phoneFor = player.key; },
+    PaymentClosed(p) { if (ui.incoming[player.key]?.id === p.orderId) { delete ui.incoming[player.key]; if (p.reason) toast(`${player.name}: ${p.reason}`, "warning"); } },
+    Receipt(sale) { ui.receiptFor[player.key] = sale; },
+    Toast(t) { toast(`${player.name}: ${t.text}`, t.kind); },
+  };
+  handlers[kind]?.(payload);
+}
+
+function log(player, action, res, isPush) {
+  const li = document.createElement("li");
+  const time = clock(Date.now()) + ":" + pad(new Date().getSeconds());
+  li.innerHTML = isPush
+    ? `<span>${time}</span><span class="push">push</span><span>${esc(action)} → <span class="who">${esc(player.name)}</span></span>`
+    : `<span>${time}</span><span class="${res.ok ? "okay" : "fail"}">${res.ok ? "ok" : "error"}</span><span><span class="who">${esc(player.name)}</span> ${esc(action)}${res.ok ? "" : ": " + esc(res.error)}</span>`;
+  const list = $("#log");
+  list.prepend(li);
+  while (list.children.length > 120) list.lastChild.remove();
+}
+
+function toast(text, kind = "info") {
+  const icons = { info: "i", success: "✓", warning: "!", error: "✕" };
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.innerHTML = `<i>${icons[kind] ?? "i"}</i><span>${esc(text)}</span>`;
+  $("#toasts").prepend(el);
+  setTimeout(() => el.remove(), 3600);
+}
+
+function call(action, ...args) {
+  const res = server.call(me(), action, ...args);
+  if (!res.ok) toast(res.error, "error");
+  return res;
+}
+
+/* Cart helpers (client-side preview with the shared priceLines) */
+function cartTotals() {
+  const lines = ui.cart.filter((l) => server.products[l.productId]).map((l) => {
+    const p = server.products[l.productId];
+    return { productId: p.id, name: p.name, unitPrice: p.price, qty: l.qty, taxRate: CONFIG.tax.enabled ? p.taxRate : 0 };
+  });
+  return priceLines(lines, { discountPct: ui.discount, taxInclusive: CONFIG.tax.inclusive });
+}
+function qtyIn(id) { return ui.cart.find((l) => l.productId === id)?.qty ?? 0; }
+function setQty(id, qty) {
+  const p = server.products[id];
+  if (qty > CONFIG.checkout.maxQty) return toast(`You can sell at most ${CONFIG.checkout.maxQty} of one item`, "warning");
+  if (p.stock != null && qty > p.stock) return toast(p.stock === 0 ? `${p.name} is sold out` : `Only ${p.stock} ${p.name} left`, "warning");
+  const line = ui.cart.find((l) => l.productId === id);
+  if (line) { if (qty <= 0) ui.cart = ui.cart.filter((l) => l !== line); else line.qty = qty; }
+  else if (qty > 0) ui.cart.push({ productId: id, qty });
+  sendPreview();
+}
+// Re-renders keep the bar in step with the real expiry time instead of restarting it.
+function countdownStyle(expiresAt) {
+  const total = CONFIG.checkout.timeout;
+  const elapsed = Math.min(total, Math.max(0, total - (expiresAt - Date.now()) / 1000));
+  return `animation:shrink ${total}s linear ${-elapsed}s forwards`;
+}
+
+function sendPreview() { if (server.register.operator === me()) server.call(me(), "register.preview", ui.cart, ui.discount); }
+
+/* ---------------------------------------------------------------- render */
+
+function render() {
+  renderStaffSeg();
+  renderWindow();
+  renderScreen();
+  renderPhone();
+}
+
+function renderStaffSeg() {
+  $("#staffSeg").innerHTML = ["ann", "cass"].map((k) =>
+    `<button type="button" data-staff="${k}" aria-pressed="${ui.staff === k}">${PEOPLE[k].name} · ${k === "ann" ? "Manager" : "Cashier"}</button>`).join("");
+}
+
+function tabsFor(role) {
+  const tabs = [["sell", "🛒 Sell"], ["sales", "🧾 Sales"], ["shift", "⏱ Shift"]];
+  if (role >= ROLES.Manager) tabs.push(["products", "📦 Products"], ["reports", "📊 Reports"], ["audit", "📜 Audit log"]);
+  return tabs;
+}
+
+function renderWindow() {
+  const win = $("#window");
+  const r = server.register;
+  const operating = r.operator === me();
+  if (!operating) {
+    const busy = r.operator && r.operator !== me();
+    win.innerHTML = `<div class="closed">
+      <div class="key" aria-hidden="true">E</div>
+      <h2>${busy ? `${esc(r.name)} is in use` : `${esc(me().name)} is standing at ${esc(r.name)}`}</h2>
+      <p>${busy ? `${esc(r.operator.name)} is using the register. In game, the other staff member sees this as a toast.` : "In game, staff hold E on the till to open the POS. Customers never see the prompt."}</p>
+      <div style="margin-top:8px"><button class="btn primary" data-action="use" type="button">Hold E · Use register</button></div>
+    </div>`;
+    return;
+  }
+  if (!tabsFor(me().role).some(([id]) => id === ui.tab)) ui.tab = "sell";
+  const shift = r.shift;
+  win.innerHTML = `
+    <div class="win-head">
+      <div class="logo" aria-hidden="true">B</div>
+      <div class="win-title"><b>${esc(CONFIG.store.name)}</b><span>${esc(r.name)}</span></div>
+      ${shift ? `<span class="pill ok">● Shift open · ${money(net(shift.totals))}</span>` : `<span class="pill warn">○ Shift closed</span>`}
+      <span class="pill">${esc(me().name)} · ${me().role >= ROLES.Manager ? "Manager" : "Cashier"}</span>
+      <button class="btn ghost small" data-action="leave" type="button" aria-label="Leave register">✕</button>
+    </div>
+    <nav class="tabs" role="tablist">${tabsFor(me().role).map(([id, label]) => `<button type="button" role="tab" data-tab="${id}" aria-selected="${ui.tab === id}">${label}</button>`).join("")}</nav>
+    <div class="content">${({ sell: viewSell, sales: viewSales, shift: viewShift, products: viewProducts, reports: viewReports, audit: viewAudit })[ui.tab]()}</div>`;
+  const search = $("#search");
+  if (search && ui.focusSearch) { search.focus(); search.setSelectionRange(search.value.length, search.value.length); ui.focusSearch = false; }
+}
+
+function stockPill(p) {
+  if (p.stock == null) return "";
+  if (p.stock <= 0) return `<span class="pill bad stock">Sold out</span>`;
+  if (p.stock <= CONFIG.lowStockAt) return `<span class="pill warn stock">Low · ${p.stock}</span>`;
+  return `<span class="pill stock" style="background:var(--panel);color:var(--muted)">${p.stock} left</span>`;
+}
+
+function viewSell() {
+  const needle = ui.query.toLowerCase();
+  const products = server.catalogue().filter((p) => p.active && (ui.category === "All" || p.category === ui.category) && (!needle || p.name.toLowerCase().includes(needle)));
+  const totals = cartTotals();
+  const r = server.register;
+  let chargeLabel = "Charge", chargeAction = "", chargeDisabled = false;
+  if (!r.shift) { chargeLabel = "Open a shift to take payments"; chargeAction = "go-shift"; }
+  else if (!ui.cart.length) chargeDisabled = true;
+  else if (!ui.customer) { chargeLabel = "Choose a customer"; chargeAction = "picker"; }
+  else { chargeLabel = `Charge ${money(totals.total)}`; chargeAction = "charge"; }
+  const maxDiscount = server.maxDiscount(me());
+
+  return `<div class="sell">
+    <div class="catalogue">
+      <input class="input" id="search" type="search" placeholder="🔍  Search products" value="${esc(ui.query)}" aria-label="Search products">
+      <div class="chips">${["All", ...CONFIG.categories].map((c) => `<button type="button" class="btn chip" data-category="${esc(c)}" aria-pressed="${ui.category === c}">${esc(c)}</button>`).join("")}</div>
+      <div class="grid">${products.map((p) => {
+        const q = qtyIn(p.id);
+        return `<button type="button" class="tile ${q ? "in" : ""} ${p.stock === 0 ? "out" : ""}" data-add="${p.id}" aria-label="Add ${esc(p.name)}">
+          <span class="swatch" style="background-color:${p.colour}">${esc(p.name[0])}</span>
+          <span class="name">${esc(p.name)}</span>
+          <span class="price money">${money(p.price)}</span>
+          ${stockPill(p)}
+          ${q ? `<span class="pill qty">×${q}</span>` : ""}
+        </button>`;
+      }).join("") || `<p class="empty">No products match</p>`}</div>
+    </div>
+    <div class="order">
+      <div class="order-head"><h3>Current order</h3><button type="button" class="btn ghost small" data-action="clear">Clear</button></div>
+      <button type="button" class="btn customer-btn" data-action="picker" style="color:${ui.customer ? "var(--text)" : "var(--muted)"}">👤&nbsp; ${ui.customer ? esc(PEOPLE[ui.customer].name) : "Choose customer ▾"}</button>
+      ${ui.picker ? `<div class="picker">${ui.picker.map((c) => `<button type="button" data-customer="${c.key}" ${c.near ? "" : 'style="opacity:.6"'}><span>${esc(c.name)} · @${c.key}</span><small>${c.near ? `${c.distance} studs` : "away from the counter"}</small></button>`).join("")}</div>` : ""}
+      <div class="lines">${totals.lines.length ? totals.lines.map((l) => `<div class="line">
+          <span class="bar" style="background:${server.products[l.productId].colour}"></span>
+          <span><b>${esc(l.name)}</b><small>${money(l.unitPrice)} each</small></span>
+          <span class="stepper"><button type="button" data-step="${l.productId}" data-by="-1" aria-label="One less">−</button><span class="num">${l.qty}</span><button type="button" data-step="${l.productId}" data-by="1" aria-label="One more">+</button></span>
+          <span class="total money">${money(l.unitPrice * l.qty)}</span>
+        </div>`).join("") : `<p class="empty">Tap a product to add it to the order</p>`}</div>
+      <div class="summary">
+        <span class="label">Discount</span>
+        <div class="discounts">${CONFIG.discounts.presets.filter((d) => d <= maxDiscount).map((d) => `<button type="button" class="btn" data-discount="${d}" aria-pressed="${ui.discount === d}">${d ? d + "%" : "None"}</button>`).join("")}</div>
+        <div class="row"><span>Subtotal</span><span class="money">${money(totals.subtotal)}</span></div>
+        ${totals.discount ? `<div class="row"><span>Discount (${ui.discount}%)</span><span class="money">-${money(totals.discount)}</span></div>` : ""}
+        <div class="row total"><span>Total</span><span class="money">${money(totals.total)}</span></div>
+        <button type="button" class="btn primary charge" data-action="${chargeAction}" ${chargeDisabled ? "disabled" : ""}>${esc(chargeLabel)}</button>
+      </div>
+      ${ui.pending ? `<div class="waiting" role="status">
+        <div class="hour" aria-hidden="true">⏳</div>
+        <h3>Waiting for ${esc(ui.pending.customer)}</h3>
+        <span class="money">${money(ui.pending.total)}</span>
+        <p>The customer approves the payment on their screen</p>
+        <div class="countdown"><i style="${countdownStyle(ui.pending.expiresAt)}"></i></div>
+        <button type="button" class="btn ghost" data-action="cancel">Cancel payment</button>
+        <button type="button" class="btn ghost small" data-action="expire">Skip the 30 s wait</button>
+      </div>` : ""}
+    </div>
+  </div>`;
+}
+
+function viewSales() {
+  const res = server.call(me(), "sales.recent");
+  const sales = res.ok ? res.data : [];
+  return `<div class="toolbar"><h2>Sales</h2>
+      <input class="input" id="findReceipt" style="width:220px" placeholder="Receipt, e.g. BB-000001" aria-label="Receipt number">
+      <button type="button" class="btn primary" data-action="find">Find</button></div>
+    <div class="list">
+      <div class="sale-row head-row"><span>Receipt</span><span>Time</span><span>Cashier → Customer</span><span>Items</span><span>Total</span><span></span></div>
+      ${sales.map((s) => `<button type="button" class="sale-row" data-receipt="${s.receipt}">
+        <span class="receipt">${s.receipt}</span><span class="muted num">${dateTime(s.t)}</span>
+        <span>${esc(s.cashier.name)} → ${esc(s.customer.name)}</span><span class="muted num">${s.lines.reduce((n, l) => n + l.qty, 0)}</span>
+        <b class="money">${money(s.total)}</b>${s.refunded ? `<span class="pill bad">Refunded</span>` : `<span class="pill ok">Paid</span>`}
+      </button>`).join("") || `<p class="empty">No sales yet. Ring something up on the Sell tab.</p>`}
+    </div>`;
+}
+
+function viewShift() {
+  const r = server.register;
+  if (!r.shift) return `<div class="card" style="text-align:center;padding:40px 20px;justify-items:center">
+      <div style="font-size:36px" aria-hidden="true">⏱</div><h2 style="font-size:22px">No shift open on ${esc(r.name)}</h2>
+      <p style="color:var(--muted);margin:0">Open a shift to start taking payments. Every sale is added to its report.</p>
+      <button type="button" class="btn success" data-action="open-shift" style="width:180px;height:46px">Open shift</button></div>`;
+  const s = server.shiftReport(r.shift);
+  const best = Math.max(1, s.topProducts[0]?.total ?? 1);
+  return `<div class="stack">
+    <div class="toolbar"><div style="margin-right:auto"><h2>Shift ${s.id}</h2><span style="color:var(--muted);font-size:14px">Opened ${clock(s.openedAt)} by ${esc(s.openedBy)}</span></div>
+      <button type="button" class="btn" data-action="x-report">X report</button><button type="button" class="btn danger" data-action="close-shift">Close shift</button></div>
+    <div class="tiles">
+      <div class="stat"><span>Net takings</span><b class="money" style="color:var(--success)">${money(s.net)}</b></div>
+      <div class="stat"><span>Sales</span><b class="num">${s.totals.count}</b></div>
+      <div class="stat"><span>Average sale</span><b class="money">${money(s.average)}</b></div>
+      <div class="stat"><span>Refunds</span><b class="money" style="color:${s.totals.refunds ? "var(--danger)" : "var(--text)"}">${money(s.totals.refunds)}</b></div>
+    </div>
+    <div class="card"><h3>Top items this shift</h3>${s.topProducts.map((p) => `<div class="rank"><span>${p.qty} × ${esc(p.name)}</span><span class="track"><i style="width:${(p.total / best) * 100}%"></i></span><b class="money">${money(p.total)}</b></div>`).join("") || `<p class="empty" style="padding:8px">Nothing sold yet</p>`}</div>
+  </div>`;
+}
+
+function viewProducts() {
+  return `<div class="toolbar"><h2>Products</h2><span style="color:var(--muted);font-size:14px">Names and categories live in Config.Products. Price, stock and availability are saved.</span></div>
+    <div class="list">${server.catalogue().map((p) => `<div class="product-row ${p.active ? "" : "off"}">
+      <span class="dot" style="background:${p.colour}"></span>
+      <span style="min-width:0"><b>${esc(p.name)}</b><small>${esc(p.category)} · ${p.id}</small></span>
+      <label class="price-edit"><span style="color:var(--muted)">$</span><input class="input num" id="price-${p.id}" data-price="${p.id}" inputmode="numeric" value="${p.price}" aria-label="${esc(p.name)} price"></label>
+      <span class="stock-edit">${p.stock == null ? `<span style="color:var(--faint)">Not stock-tracked</span>` :
+        `<button type="button" class="btn small" data-stock="${p.id}" data-by="-10">-10</button><button type="button" class="btn small" data-stock="${p.id}" data-by="-1">-1</button>
+         <b class="num" style="color:${p.stock === 0 ? "var(--danger)" : p.stock <= CONFIG.lowStockAt ? "var(--warning)" : "var(--text)"}">${p.stock}</b>
+         <button type="button" class="btn small" data-stock="${p.id}" data-by="1">+1</button><button type="button" class="btn small" data-stock="${p.id}" data-by="10">+10</button>`}</span>
+      <button type="button" class="btn small ${p.active ? "success" : ""}" style="border-radius:999px" data-active="${p.id}">${p.active ? "On sale" : "Off sale"}</button>
+    </div>`).join("")}</div>`;
+}
+
+function viewReports() {
+  const res = server.call(me(), "reports.days");
+  if (!res.ok) return "";
+  const days = res.data;
+  const week = days.reduce((a, d) => mergeAgg(a, d.totals), newAggregate());
+  const peak = Math.max(1, ...days.map((d) => net(d.totals)));
+  const ranks = (rows, colour) => {
+    const best = Math.max(1, rows[0]?.value ?? 1);
+    return rows.map((r) => `<div class="rank"><span>${esc(r.label)}</span><span class="track"><i style="width:${(r.value / best) * 100}%;background:${colour}"></i></span><small style="color:var(--muted)">${r.sub}</small></div>`).join("") || `<p class="empty" style="padding:8px">No sales in this period</p>`;
+  };
+  return `<div class="stack">
+    <div class="toolbar"><div style="margin-right:auto"><h2>Last 7 days</h2><span style="color:var(--muted);font-size:14px">All registers on all servers. Earlier days are sample data in this simulator.</span></div></div>
+    <div class="tiles">
+      <div class="stat"><span>Net takings</span><b class="money" style="color:var(--success)">${money(net(week))}</b></div>
+      <div class="stat"><span>Sales</span><b class="num">${week.count}</b></div>
+      <div class="stat"><span>Items sold</span><b class="num">${week.items}</b></div>
+      <div class="stat"><span>Discounts given</span><b class="money" style="color:var(--warning)">${money(week.discounts)}</b></div>
+    </div>
+    <div class="card"><h3>Net takings per day</h3>
+      <div class="chart">${days.map((d, i) => { const v = net(d.totals); return `<div class="col ${i === 6 ? "today" : ""}">
+        <span class="val money">${v ? money(v) : "–"}</span><span class="plot"><i style="height:${(Math.max(v, 0) / peak) * 100}%"></i></span><span class="day">${d.label}</span></div>`; }).join("")}</div>
+    </div>
+    <div class="two">
+      <div class="card"><h3>Best sellers</h3>${ranks(topProducts(week, 6).map((p) => ({ label: p.name, value: p.total, sub: `${p.qty} sold · ${money(p.total)}` })), "var(--accent)")}</div>
+      <div class="card"><h3>Top cashiers</h3>${ranks(topCashiers(week, 6).map((c) => ({ label: c.name, value: c.total, sub: `${c.count} sales · ${money(c.total)}` })), "var(--success)")}</div>
+    </div>
+  </div>`;
+}
+
+function viewAudit() {
+  const res = server.call(me(), "audit.recent");
+  const tag = { sale: "ok", refund: "bad", discount: "warn", "shift.open": "info", "shift.close": "info" };
+  return `<div class="toolbar"><h2>Audit log</h2></div><div class="list">${(res.data ?? []).map((e) => `<div class="audit-row">
+      <time>${dateTime(e.t)}</time><b>${esc(e.actor)}</b><span class="pill ${tag[e.action] ?? ""}">${esc(e.action)}</span><span>${esc(e.detail)}</span></div>`).join("") || `<p class="empty">Nothing logged yet</p>`}</div>`;
+}
+
+function renderScreen() {
+  const r = server.register;
+  let status, detail, amount = "", accent;
+  if (Date.now() < r.flashUntil) { status = "Thank you!"; detail = "Payment approved"; amount = "✓"; accent = "var(--success)"; }
+  else if (r.order) { status = "Please approve"; detail = `Waiting for ${r.order.customer.name}`; amount = money(r.order.totals.total); accent = "var(--warning)"; }
+  else if (r.operator && r.preview?.items) { status = `${r.preview.items} item${r.preview.items === 1 ? "" : "s"}`; detail = `Served by ${r.operator.name}`; amount = money(r.preview.total); accent = "var(--accent)"; }
+  else if (r.operator && r.shift) { status = "Welcome!"; detail = `${r.operator.name} can take your order`; accent = "var(--accent)"; }
+  else if (r.shift) { status = "Back soon"; detail = "Waiting for a cashier"; accent = "var(--faint)"; }
+  else { status = "Closed"; detail = r.name; accent = "var(--faint)"; }
+  const screen = $("#screen");
+  screen.style.setProperty("--screen-accent", accent);
+  screen.innerHTML = `<span class="store">${esc(CONFIG.store.name.toUpperCase())}</span><span class="status">${esc(status)}</span><span class="detail">${esc(detail)}</span><span class="amount money">${esc(amount)}</span>`;
+}
+
+function renderPhone() {
+  const key = ui.phoneFor;
+  const person = PEOPLE[key];
+  const o = ui.incoming[key];
+  const balance = server.wallets[key];
+  const items = server.backpacks[key].reduce((m, n) => m.set(n, (m.get(n) ?? 0) + 1), new Map());
+  const enough = o && balance >= o.total;
+  $("#phone").innerHTML = `
+    <div class="phone-head">
+      <span class="avatar" style="background:${person.colour}">${person.name[0]}</span>
+      <div><b>${person.name}'s screen</b><br><span style="color:var(--muted);font-size:13px">Customer</span></div>
+      <div class="seg" role="group" aria-label="Customer">${["bob", "eve"].map((k) => `<button type="button" data-phone="${k}" aria-pressed="${key === k}">${PEOPLE[k].name}${ui.incoming[k] ? " •" : ""}</button>`).join("")}</div>
+    </div>
+    <div class="wallet"><span class="label">${CONFIG.currency.stat}</span><b class="money">${money(balance)}</b></div>
+    <div class="toggle"><span><b>At the counter</b><small>Within ${CONFIG.checkout.customerRange} studs (about 4.5 m) of the till</small></span>
+      <button type="button" class="switch" role="switch" aria-checked="${server.atCounter[key]}" data-near="${key}" aria-label="${person.name} at the counter"></button></div>
+    <div><span class="label">Backpack</span><div class="backpack">${[...items].map(([n, c]) => `<span class="pill">${esc(n)}${c > 1 ? ` ×${c}` : ""}</span>`).join("") || `<span style="color:var(--faint);font-size:14px">Empty</span>`}</div></div>
+    ${ui.receiptFor[key] ? `<button type="button" class="btn" data-action="customer-receipt">Last receipt · ${ui.receiptFor[key].receipt}</button>` : ""}
+    <p class="hint">Payment requests from the cashier pop up here. Nothing is charged until ${person.name} presses Pay.</p>
+    ${o ? `<div class="pay"><div class="pay-card" role="dialog" aria-label="Payment request">
+      <header><span class="hour" aria-hidden="true">☕</span><div><h3>Payment request</h3><p>${esc(o.cashier)} at ${esc(o.registerName)}, ${esc(CONFIG.store.name)}</p></div></header>
+      <div class="bill">${o.lines.map((l) => `<div><span>${l.qty} × ${esc(l.name)}</span><span class="money">${money(l.unitPrice * l.qty)}</span></div>`).join("")}</div>
+      ${o.discount ? `<div class="row"><span>Discount (${o.discountPct}%)</span><span class="money">-${money(o.discount)}</span></div>` : ""}
+      <div class="row total"><span>Total</span><span class="money">${money(o.total)}</span></div>
+      <span class="balance ${enough ? "" : "short"}">Your ${CONFIG.currency.stat}: ${money(balance)} → ${money(balance - o.total)}</span>
+      <div class="countdown"><i style="${countdownStyle(o.expiresAt)}"></i></div>
+      <div class="pay-actions"><button type="button" class="btn ghost" data-pay="decline">Decline</button>
+        <button type="button" class="btn success" data-pay="accept" ${enough ? "" : "disabled"}>${enough ? `Pay ${money(o.total)}` : `Not enough ${CONFIG.currency.stat}`}</button></div>
+    </div></div>` : ""}`;
+}
+
+/* ---------------------------------------------------------------- dialogs */
+
+function openDialog(html, onClick) {
+  const root = $("#dialogRoot");
+  root.innerHTML = `<div class="dialog-back" data-dismiss="1"><div class="dialog" role="dialog" aria-modal="true">${html}</div></div>`;
+  const close = () => { root.innerHTML = ""; };
+  root.firstElementChild.addEventListener("click", (e) => {
+    if (e.target.dataset.dismiss || e.target.closest("[data-close]")) return close();
+    onClick?.(e, close);
+  });
+  root.querySelector(".dialog button:last-child")?.focus();
+  return close;
+}
+
+function receiptText(sale) {
+  const rule = "-".repeat(34);
+  const center = (s) => " ".repeat(Math.max(0, Math.floor((34 - s.length) / 2))) + s;
+  const lines = [`<b>${esc(center(CONFIG.store.name.toUpperCase()))}</b>`, esc(center(sale.registerName)), rule,
+    row("Receipt", sale.receipt), row("Date", dateTime(sale.t)), row("Cashier", sale.cashier.name), row("Customer", sale.customer.name), rule,
+    ...sale.lines.map((l) => esc(row(`${l.qty} x ${l.name}`, money(l.unitPrice * l.qty)))), rule, row("Subtotal", money(sale.subtotal))];
+  if (sale.discount) lines.push(row(`Discount ${sale.discountPct}%`, "-" + money(sale.discount)));
+  lines.push(`<b>${row("TOTAL", money(sale.total))}</b>`);
+  if (sale.refunded) lines.push(rule, row("Refunded", dateTime(sale.refunded.t)), row("By", sale.refunded.by));
+  lines.push(rule, esc(center(CONFIG.store.footer)));
+  return lines.join("\n");
+}
+
+function showReceipt(sale, { canRefund = false } = {}) {
+  const body = (confirming) => `<h3>Receipt ${sale.receipt}</h3>
+    <div class="paper">${receiptText(sale)}${sale.refunded ? `<span class="stamp">REFUNDED</span>` : ""}</div>
+    <div class="actions">${canRefund && !sale.refunded ? (confirming
+      ? `<button type="button" class="btn ghost" data-restock="1">${ui.restock ? "☑" : "☐"} Restock items</button><button type="button" class="btn" data-back="1">Back</button><button type="button" class="btn danger" data-confirm="1">Confirm ${money(sale.total)}</button>`
+      : `<button type="button" class="btn danger" data-refund="1">Refund</button>`) : ""}<button type="button" class="btn primary" data-close="1">Close</button></div>`;
+  ui.restock = true;
+  openDialog(body(false), (e, close) => {
+    const dialog = e.currentTarget.querySelector(".dialog");
+    if (e.target.closest("[data-refund]") || e.target.closest("[data-back]")) dialog.innerHTML = body(!!e.target.closest("[data-refund]"));
+    else if (e.target.closest("[data-restock]")) { ui.restock = !ui.restock; dialog.innerHTML = body(true); }
+    else if (e.target.closest("[data-confirm]")) {
+      const res = call("sales.refund", sale.receipt, ui.restock);
+      if (res.ok) { toast(`Refunded ${money(sale.total)} to ${sale.customer.name}`, "success"); close(); }
+      render();
+    }
+  });
+}
+
+function showReport(title, report) {
+  const t = report.totals, rule = "-".repeat(34);
+  const lines = [`<b>${esc(CONFIG.store.name.toUpperCase())}</b>`, `<b>${title}</b>`, rule, row("Register", server.register.name), row("Shift", report.id),
+    row("Opened", dateTime(report.openedAt)), row("Opened by", report.openedBy)];
+  if (report.closedAt) lines.push(row("Closed", dateTime(report.closedAt)), row("Closed by", report.closedBy));
+  lines.push(rule, row("Sales", String(t.count)), row("Items sold", String(t.items)), row("Gross", money(t.gross)), row("Discounts", "-" + money(t.discounts)),
+    row("Taken", money(t.sales)), row(`Refunds (${t.refundCount})`, "-" + money(t.refunds)), `<b>${row("NET", money(report.net))}</b>`, row("Average sale", money(report.average)));
+  if (report.topProducts.length) lines.push(rule, "<b>TOP ITEMS</b>", ...report.topProducts.map((p) => esc(row(`${p.qty} x ${p.name}`, money(p.total)))));
+  if (report.cashiers.length) lines.push(rule, "<b>BY CASHIER</b>", ...report.cashiers.map((c) => esc(row(`${c.name} (${c.count})`, money(c.total)))));
+  openDialog(`<h3>${title}</h3><div class="paper">${lines.join("\n")}</div><div class="actions"><button type="button" class="btn primary" data-close="1">Done</button></div>`);
+}
+
+/* ---------------------------------------------------------------- events */
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("button");
+  if (!t || t.closest("#dialogRoot")) return;
+  const d = t.dataset;
+
+  if (d.staff) { ui.staff = d.staff; ui.cart = []; ui.discount = 0; ui.customer = null; ui.picker = null; ui.pending = null; }
+  else if (d.tab) { ui.tab = d.tab; ui.picker = null; }
+  else if (d.category) ui.category = d.category;
+  else if (d.add) { if (!ui.pending) setQty(d.add, qtyIn(d.add) + 1); }
+  else if (d.step) { if (!ui.pending) setQty(d.step, qtyIn(d.step) + Number(d.by)); }
+  else if (d.discount) { ui.discount = Number(d.discount); sendPreview(); }
+  else if (d.customer) { ui.customer = d.customer; ui.picker = null; }
+  else if (d.phone) ui.phoneFor = d.phone;
+  else if (d.near) { server.atCounter[d.near] = !server.atCounter[d.near]; if (ui.picker) ui.picker = call("register.customers").data; }
+  else if (d.pay) {
+    const o = ui.incoming[ui.phoneFor];
+    const res = server.call(PEOPLE[ui.phoneFor], "checkout.respond", o.id, d.pay === "accept");
+    if (res.ok || !res.error.startsWith("You don't have enough")) delete ui.incoming[ui.phoneFor];
+    if (!res.ok) toast(`${PEOPLE[ui.phoneFor].name}: ${res.error}`, "error");
+    else if (res.data.status === "paid") toast(`${PEOPLE[ui.phoneFor].name} paid. Enjoy!`, "success");
+  }
+  else if (d.receipt) { const res = call("sales.get", d.receipt); if (res.ok) showReceipt(res.data, { canRefund: me().role >= ROLES.Manager }); }
+  else if (d.stock) call("products.stock", d.stock, Number(d.by));
+  else if (d.active) call("products.active", d.active, !server.products[d.active].active);
+  else if (d.action) ({
+    use: () => call("register.use"),
+    leave: () => call("register.leave"),
+    clear: () => { if (!ui.pending) { ui.cart = []; ui.discount = 0; ui.customer = null; sendPreview(); } },
+    picker: () => { if (!ui.pending) ui.picker = ui.picker ? null : call("register.customers").data; },
+    "go-shift": () => { ui.tab = "shift"; },
+    charge: () => {
+      const res = call("checkout.start", ui.cart, ui.discount, ui.customer);
+      if (res.ok) ui.pending = { orderId: res.data.orderId, customer: res.data.customer, total: res.data.total, expiresAt: res.data.expiresAt };
+    },
+    cancel: () => ui.pending && call("checkout.cancel", ui.pending.orderId),
+    expire: () => ui.pending && call("checkout.expire", ui.pending.orderId),
+    "open-shift": () => { if (call("shift.open").ok) toast(`Shift opened on ${server.register.name}`, "success"); },
+    "x-report": () => { const res = call("shift.report"); if (res.ok && res.data.shift) showReport("X REPORT", res.data.shift); },
+    "close-shift": () => openDialog(`<h3>Close shift?</h3><p>This ends the shift on ${esc(server.register.name)} and prints the Z report.</p>
+        <div class="actions"><button type="button" class="btn" data-close="1">Keep open</button><button type="button" class="btn danger" data-zreport="1">Close shift</button></div>`,
+      (ev, close) => { if (ev.target.closest("[data-zreport]")) { close(); const res = call("shift.close"); render(); if (res.ok) showReport("Z REPORT", res.data); } }),
+    find: () => { const v = $("#findReceipt").value.replace(/\s/g, ""); if (v) { const res = call("sales.get", v); if (res.ok) showReceipt(res.data, { canRefund: me().role >= ROLES.Manager }); } },
+    "customer-receipt": () => showReceipt(ui.receiptFor[ui.phoneFor]),
+  })[d.action]?.();
+  render();
+});
+
+document.addEventListener("input", (e) => {
+  if (e.target.id === "search") { ui.query = e.target.value; ui.focusSearch = true; render(); }
+});
+document.addEventListener("change", (e) => {
+  const id = e.target.dataset.price;
+  if (!id) return;
+  const value = Number(e.target.value);
+  if (!Number.isInteger(value) || value < 0) { toast("Enter a whole number price", "warning"); e.target.value = server.products[id].price; return; }
+  if (value !== server.products[id].price && call("products.price", id, value).ok) toast(`${server.products[id].name} now costs ${money(value)}`, "success");
+  render();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("#dialogRoot").innerHTML) $("#dialogRoot").innerHTML = "";
+  if (e.key === "Enter" && e.target.id === "findReceipt") document.querySelector('[data-action="find"]').click();
+});
+
+$("#resetBtn").addEventListener("click", () => {
+  if (server.register.order) clearTimeout(server.register.order.timer);
+  server.reset();
+  Object.assign(ui, { tab: "sell", cart: [], discount: 0, customer: null, pending: null, picker: null, incoming: {}, receiptFor: {}, query: "", category: "All" });
+  $("#log").innerHTML = "";
+  toast("Simulator reset");
+  render();
+});
+$("#clearLog").addEventListener("click", () => { $("#log").innerHTML = ""; });
+
+// Opens in a working state: Ann at the register with a shift open and an order in progress.
+server.reset();
+server.call(PEOPLE.ann, "register.use");
+server.call(PEOPLE.ann, "shift.open");
+ui.cart = [{ productId: "latte", qty: 2 }, { productId: "croissant", qty: 1 }];
+ui.customer = "bob";
+sendPreview();
+render();
+</script>

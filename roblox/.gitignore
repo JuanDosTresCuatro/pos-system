@@ -1,0 +1,8 @@
+sourcemap.json
+build/
+*.rbxl
+*.rbxlx
+# The ready-to-open place file is committed so people can try RoPOS without installing Rojo.
+!/RoPOS.rbxlx
+*.lock
+roblox.yml

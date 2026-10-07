@@ -417,7 +417,7 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
         <li><b>Use register</b>, then <b>Open shift</b> on the Shift tab.</li>
         <li>Add items, choose <b>Bob</b> and press <b>Charge</b>. Pay on Bob's screen.</li>
         <li>Charge Eve while she is away from the counter, then switch her <b>At the counter</b> on.</li>
-        <li>Charge 2 gift cards: Bob can't afford 500.</li>
+        <li>Charge a <b>Golden Crown</b>: Bob can't afford £150.</li>
         <li>Switch to <b>Cass</b>: discounts stop at 10% and the manager tabs disappear.</li>
         <li>As Ann, change a price while a payment is waiting, then pay.</li>
         <li>Refund a sale on the Sales tab, then try to refund it again.</li>
@@ -438,29 +438,34 @@ h1, h2, h3 { margin: 0; text-wrap: balance; }
    ========================================================================== */
 
 const CONFIG = {
-  store: { name: "Brickbrew Café", prefix: "BB", footer: "Thanks for visiting. See you soon!" },
-  currency: { stat: "Cash", symbol: "$", start: 500 },
-  tax: { enabled: false, name: "Sales tax", inclusive: true },
+  store: { name: "Blox Mart", prefix: "BM", footer: "Thanks for shopping at Blox Mart!" },
+  currency: { stat: "Cash", symbol: "£", start: 100 },
+  tax: { enabled: false, name: "VAT", inclusive: true },
   discounts: { presets: [0, 5, 10, 15, 25, 50], cashierMax: 10, managerMax: 100 },
   checkout: { customerRange: 16, timeout: 30, maxLines: 20, maxQty: 20 },
   lowStockAt: 5,
-  categories: ["Coffee", "Tea & Cold", "Bakery", "Merch"],
+  categories: ["Snacks", "Gear", "Tools", "Cosmetics"],
 };
 const SEED = [
-  { id: "espresso", name: "Espresso", category: "Coffee", price: 15, taxRate: 20, colour: "#5c3c28", tool: true },
-  { id: "latte", name: "Caramel Latte", category: "Coffee", price: 28, taxRate: 20, colour: "#c99663", tool: true },
-  { id: "flatwhite", name: "Flat White", category: "Coffee", price: 24, taxRate: 20, colour: "#e2c4a0", tool: true },
-  { id: "mocha", name: "Mocha", category: "Coffee", price: 30, taxRate: 20, colour: "#784830", tool: true },
-  { id: "matcha", name: "Matcha Latte", category: "Tea & Cold", price: 32, taxRate: 20, colour: "#81b25c", tool: true },
-  { id: "icedtea", name: "Peach Iced Tea", category: "Tea & Cold", price: 18, taxRate: 20, colour: "#f5a662", tool: true },
-  { id: "smoothie", name: "Berry Smoothie", category: "Tea & Cold", price: 35, taxRate: 20, colour: "#c44478", tool: true },
-  { id: "croissant", name: "Butter Croissant", category: "Bakery", price: 20, taxRate: 0, stock: 30, colour: "#e8b252", tool: true },
-  { id: "cookie", name: "Choc Chip Cookie", category: "Bakery", price: 12, taxRate: 0, stock: 40, colour: "#b07846", tool: true },
-  { id: "muffin", name: "Blueberry Muffin", category: "Bakery", price: 22, taxRate: 0, stock: 24, colour: "#6e62aa", tool: true },
-  { id: "bagel", name: "Everything Bagel", category: "Bakery", price: 26, taxRate: 0, stock: 4, colour: "#cda06e", tool: true },
-  { id: "mug", name: "Brickbrew Mug", category: "Merch", price: 120, taxRate: 20, stock: 10, colour: "#e6e6e6", tool: true },
-  { id: "beans", name: "House Beans 250 g", category: "Merch", price: 90, taxRate: 0, stock: 15, colour: "#462d1e", tool: false },
-  { id: "giftcard", name: "Gift Card", category: "Merch", price: 250, taxRate: 0, colour: "#5882ff", tool: false },
+  { id: "bloxycola", name: "Bloxy Cola", category: "Snacks", price: 3, taxRate: 20, colour: "#c4281c", tool: true },
+  { id: "pizza", name: "Pizza Slice", category: "Snacks", price: 4, taxRate: 20, colour: "#f5b43c", tool: true },
+  { id: "cheezburger", name: "Cheezburger", category: "Snacks", price: 5, taxRate: 20, colour: "#aa6e3c", tool: true },
+  { id: "taco", name: "Taco", category: "Snacks", price: 3, taxRate: 20, colour: "#e6be5a", tool: true },
+  { id: "icecream", name: "Ice Cream Cone", category: "Snacks", price: 2, taxRate: 20, colour: "#ffaac8", tool: true },
+  { id: "gravitycoil", name: "Gravity Coil", category: "Gear", price: 25, taxRate: 20, stock: 10, colour: "#7850dc", tool: true },
+  { id: "speedcoil", name: "Speed Coil", category: "Gear", price: 25, taxRate: 20, stock: 10, colour: "#28c878", tool: true },
+  { id: "grapplehook", name: "Grapple Hook", category: "Gear", price: 30, taxRate: 20, stock: 6, colour: "#5a6478", tool: true },
+  { id: "magiccarpet", name: "Magic Carpet", category: "Gear", price: 60, taxRate: 20, stock: 3, colour: "#aa285a", tool: true },
+  { id: "jetpack", name: "Jetpack", category: "Gear", price: 80, taxRate: 20, stock: 2, colour: "#a0a5af", tool: true },
+  { id: "sword", name: "Linked Sword", category: "Tools", price: 15, taxRate: 20, colour: "#c8cdd7", tool: true },
+  { id: "paintball", name: "Paintball Gun", category: "Tools", price: 20, taxRate: 20, colour: "#1e8ce6", tool: true },
+  { id: "slingshot", name: "Slingshot", category: "Tools", price: 8, taxRate: 20, colour: "#825532", tool: true },
+  { id: "flashlight", name: "Flashlight", category: "Tools", price: 5, taxRate: 20, colour: "#fadc5a", tool: true },
+  { id: "boombox", name: "Boombox", category: "Tools", price: 12, taxRate: 20, stock: 4, colour: "#2d2d37", tool: true },
+  { id: "partyhat", name: "Party Hat", category: "Cosmetics", price: 6, taxRate: 20, colour: "#ff5aa0", tool: true },
+  { id: "tophat", name: "Top Hat", category: "Cosmetics", price: 10, taxRate: 20, colour: "#19191e", tool: true },
+  { id: "sparkletrail", name: "Sparkle Trail", category: "Cosmetics", price: 18, taxRate: 20, stock: 15, colour: "#78dcff", tool: false },
+  { id: "crown", name: "Golden Crown", category: "Cosmetics", price: 150, taxRate: 20, colour: "#f0be28", tool: true },
 ];
 const ROLES = { Customer: 0, Cashier: 1, Manager: 2 };
 const PEOPLE = {
@@ -768,8 +773,8 @@ const server = {
 // Earlier days are sample data so the 7-day chart has something to show.
 function seedDays() {
   const days = {};
-  const pattern = [[9, ["latte", 5], ["cookie", 4], ["croissant", 3]], [14, ["latte", 7], ["mocha", 3], ["muffin", 4]], [11, ["flatwhite", 5], ["bagel", 2]],
-    [18, ["latte", 9], ["smoothie", 4], ["cookie", 6]], [22, ["mocha", 6], ["matcha", 5], ["mug", 1]], [16, ["latte", 6], ["icedtea", 6], ["croissant", 4]]];
+  const pattern = [[9, ["bloxycola", 5], ["pizza", 4], ["sword", 3]], [14, ["bloxycola", 7], ["gravitycoil", 3], ["taco", 4]], [11, ["cheezburger", 5], ["paintball", 2]],
+    [18, ["bloxycola", 9], ["speedcoil", 4], ["partyhat", 6]], [22, ["pizza", 6], ["grapplehook", 3], ["tophat", 4]], [16, ["bloxycola", 6], ["slingshot", 6], ["icecream", 4]]];
   pattern.forEach(([count, ...items], index) => {
     const agg = newAggregate();
     const t = Date.now() - (6 - index) * 86400000;
@@ -779,7 +784,7 @@ function seedDays() {
       const q = Math.max(1, Math.round(qty / 3));
       addSale(agg, { cashier: { name: i % 3 ? "Cass" : "Ann" }, lines: [{ productId: id, name: p.name, qty: q, total: p.price * q }], subtotal: p.price * q, discount: 0, tax: 0, total: p.price * q });
     }
-    if (index === 3) addRefund(agg, { total: 28 });
+    if (index === 3) addRefund(agg, { total: 25 });
     days[dayKey(t)] = agg;
   });
   return days;
@@ -989,7 +994,7 @@ function viewSales() {
   const res = server.call(me(), "sales.recent");
   const sales = res.ok ? res.data : [];
   return `<div class="toolbar"><h2>Sales</h2>
-      <input class="input" id="findReceipt" style="width:220px" placeholder="Receipt, e.g. BB-000001" aria-label="Receipt number">
+      <input class="input" id="findReceipt" style="width:220px" placeholder="Receipt, e.g. BM-000001" aria-label="Receipt number">
       <button type="button" class="btn primary" data-action="find">Find</button></div>
     <div class="list">
       <div class="sale-row head-row"><span>Receipt</span><span>Time</span><span>Cashier → Customer</span><span>Items</span><span>Total</span><span></span></div>
@@ -1027,7 +1032,7 @@ function viewProducts() {
     <div class="list">${server.catalogue().map((p) => `<div class="product-row ${p.active ? "" : "off"}">
       <span class="dot" style="background:${p.colour}"></span>
       <span style="min-width:0"><b>${esc(p.name)}</b><small>${esc(p.category)} · ${p.id}</small></span>
-      <label class="price-edit"><span style="color:var(--muted)">$</span><input class="input num" id="price-${p.id}" data-price="${p.id}" inputmode="numeric" value="${p.price}" aria-label="${esc(p.name)} price"></label>
+      <label class="price-edit"><span style="color:var(--muted)">£</span><input class="input num" id="price-${p.id}" data-price="${p.id}" inputmode="numeric" value="${p.price}" aria-label="${esc(p.name)} price"></label>
       <span class="stock-edit">${p.stock == null ? `<span style="color:var(--faint)">Not stock-tracked</span>` :
         `<button type="button" class="btn small" data-stock="${p.id}" data-by="-10">-10</button><button type="button" class="btn small" data-stock="${p.id}" data-by="-1">-1</button>
          <b class="num" style="color:${p.stock === 0 ? "var(--danger)" : p.stock <= CONFIG.lowStockAt ? "var(--warning)" : "var(--text)"}">${p.stock}</b>
@@ -1106,7 +1111,7 @@ function renderPhone() {
     ${ui.receiptFor[key] ? `<button type="button" class="btn" data-action="customer-receipt">Last receipt · ${ui.receiptFor[key].receipt}</button>` : ""}
     <p class="hint">Payment requests from the cashier pop up here. Nothing is charged until ${person.name} presses Pay.</p>
     ${o ? `<div class="pay"><div class="pay-card" role="dialog" aria-label="Payment request">
-      <header><span class="hour" aria-hidden="true">☕</span><div><h3>Payment request</h3><p>${esc(o.cashier)} at ${esc(o.registerName)}, ${esc(CONFIG.store.name)}</p></div></header>
+      <header><span class="hour" aria-hidden="true">🛒</span><div><h3>Payment request</h3><p>${esc(o.cashier)} at ${esc(o.registerName)}, ${esc(CONFIG.store.name)}</p></div></header>
       <div class="bill">${o.lines.map((l) => `<div><span>${l.qty} × ${esc(l.name)}</span><span class="money">${money(l.unitPrice * l.qty)}</span></div>`).join("")}</div>
       ${o.discount ? `<div class="row"><span>Discount (${o.discountPct}%)</span><span class="money">-${money(o.discount)}</span></div>` : ""}
       <div class="row total"><span>Total</span><span class="money">${money(o.total)}</span></div>
@@ -1254,7 +1259,7 @@ $("#clearLog").addEventListener("click", () => { $("#log").innerHTML = ""; });
 server.reset();
 server.call(PEOPLE.ann, "register.use");
 server.call(PEOPLE.ann, "shift.open");
-ui.cart = [{ productId: "latte", qty: 2 }, { productId: "croissant", qty: 1 }];
+ui.cart = [{ productId: "bloxycola", qty: 2 }, { productId: "pizza", qty: 1 }];
 ui.customer = "bob";
 sendPreview();
 render();

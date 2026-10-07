@@ -1,4 +1,4 @@
--- Receipts. Each sale is its own DataStore key ("s/BB-000042"); a rolling list of the latest
+-- Receipts. Each sale is its own DataStore key ("s/BM-000042"); a rolling list of the latest
 -- 200 summaries is shared by every server for the Sales screen.
 
 local Shared = game:GetService("ReplicatedStorage"):WaitForChild("POS")

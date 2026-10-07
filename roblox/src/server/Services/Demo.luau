@@ -1,4 +1,4 @@
--- Builds a café counter with a register when the place has none, and simple item Tools for
+-- Builds a shop counter with a register when the place has none, and simple item Tools for
 -- products that have no Tool in ServerStorage.POSItems. Turn both off in Config.Demo.
 
 local CollectionService = game:GetService("CollectionService")
@@ -120,7 +120,7 @@ function Demo.buildCounter()
 	})
 
 	-- A menu board above the counter, readable from the customer side.
-	sign(model, "ORDER HERE  ☕", base * CFrame.new(0, 9.5, 0) * CFrame.Angles(0, math.pi, 0))
+	sign(model, "BLOX MART  🛒", base * CFrame.new(0, 9.5, 0) * CFrame.Angles(0, math.pi, 0))
 	part(model, {
 		Name = "SignPost",
 		Size = Vector3.new(0.3, 5.5, 0.3),

@@ -4,9 +4,9 @@
 local Config = {}
 
 Config.Store = {
-	Name = "Brickbrew Café",
-	ReceiptPrefix = "BB",
-	Footer = "Thanks for visiting. See you soon!",
+	Name = "Blox Mart",
+	ReceiptPrefix = "BM",
+	Footer = "Thanks for shopping at Blox Mart!",
 }
 
 Config.Currency = {
@@ -15,13 +15,13 @@ Config.Currency = {
 	--                player.leaderstats, and leaves saving to your game.
 	Provider = "Builtin",
 	StatName = "Cash",
-	Symbol = "$",
-	StartingBalance = 500,
+	Symbol = "£", -- whole pounds, like every Roblox currency
+	StartingBalance = 100,
 }
 
 Config.Tax = {
 	Enabled = false,
-	Name = "Sales tax",
+	Name = "VAT",
 	-- true: prices already include tax. false: tax is added on top at checkout.
 	Inclusive = true,
 }
@@ -77,7 +77,7 @@ Config.Data = {
 }
 
 Config.Demo = {
-	-- Build a café counter if the place has no register tagged "POSRegister".
+	-- Build a shop counter if the place has no register tagged "POSRegister".
 	SpawnRegister = true,
 	-- Create simple item Tools for products that have no Tool in ServerStorage.POSItems.
 	CreateItemTools = true,
@@ -85,141 +85,194 @@ Config.Demo = {
 
 Config.RegisterTag = "POSRegister"
 
-Config.Categories = { "Coffee", "Tea & Cold", "Bakery", "Merch" }
+Config.Categories = { "Snacks", "Gear", "Tools", "Cosmetics" }
 
 -- Id must be unique and must never change (sales and stock refer to it).
--- Stock = nil means the product is not stock-tracked.
--- TaxRate is a percentage and is used only when Config.Tax.Enabled is true.
+-- Price is in whole pounds. Stock = nil means the product is not stock-tracked.
+-- TaxRate is a percentage (20 = UK standard VAT) and is used only when Config.Tax.Enabled is true.
+-- Tool is the name of a Tool in ServerStorage.POSItems that the customer receives.
+local rgb = Color3.fromRGB
 Config.Products = {
+	-- Snacks
 	{
-		Id = "espresso",
-		Name = "Espresso",
-		Category = "Coffee",
-		Price = 15,
+		Id = "bloxycola",
+		Name = "Bloxy Cola",
+		Category = "Snacks",
+		Price = 3,
 		TaxRate = 20,
-		Colour = Color3.fromRGB(92, 60, 40),
-		Tool = "Espresso",
+		Colour = rgb(196, 40, 28),
+		Tool = "Bloxy Cola",
 	},
 	{
-		Id = "latte",
-		Name = "Caramel Latte",
-		Category = "Coffee",
-		Price = 28,
+		Id = "pizza",
+		Name = "Pizza Slice",
+		Category = "Snacks",
+		Price = 4,
 		TaxRate = 20,
-		Colour = Color3.fromRGB(201, 150, 99),
-		Tool = "Caramel Latte",
+		Colour = rgb(245, 180, 60),
+		Tool = "Pizza Slice",
 	},
 	{
-		Id = "flatwhite",
-		Name = "Flat White",
-		Category = "Coffee",
-		Price = 24,
+		Id = "cheezburger",
+		Name = "Cheezburger",
+		Category = "Snacks",
+		Price = 5,
 		TaxRate = 20,
-		Colour = Color3.fromRGB(226, 196, 160),
-		Tool = "Flat White",
+		Colour = rgb(170, 110, 60),
+		Tool = "Cheezburger",
 	},
 	{
-		Id = "mocha",
-		Name = "Mocha",
-		Category = "Coffee",
-		Price = 30,
+		Id = "taco",
+		Name = "Taco",
+		Category = "Snacks",
+		Price = 3,
 		TaxRate = 20,
-		Colour = Color3.fromRGB(120, 72, 48),
-		Tool = "Mocha",
+		Colour = rgb(230, 190, 90),
+		Tool = "Taco",
 	},
 	{
-		Id = "matcha",
-		Name = "Matcha Latte",
-		Category = "Tea & Cold",
-		Price = 32,
+		Id = "icecream",
+		Name = "Ice Cream Cone",
+		Category = "Snacks",
+		Price = 2,
 		TaxRate = 20,
-		Colour = Color3.fromRGB(129, 178, 92),
-		Tool = "Matcha Latte",
+		Colour = rgb(255, 170, 200),
+		Tool = "Ice Cream Cone",
 	},
+	-- Gear
 	{
-		Id = "icedtea",
-		Name = "Peach Iced Tea",
-		Category = "Tea & Cold",
-		Price = 18,
-		TaxRate = 20,
-		Colour = Color3.fromRGB(245, 166, 98),
-		Tool = "Peach Iced Tea",
-	},
-	{
-		Id = "smoothie",
-		Name = "Berry Smoothie",
-		Category = "Tea & Cold",
-		Price = 35,
-		TaxRate = 20,
-		Colour = Color3.fromRGB(196, 68, 120),
-		Tool = "Berry Smoothie",
-	},
-	{
-		Id = "croissant",
-		Name = "Butter Croissant",
-		Category = "Bakery",
-		Price = 20,
-		TaxRate = 0,
-		Stock = 30,
-		Colour = Color3.fromRGB(232, 178, 82),
-		Tool = "Butter Croissant",
-	},
-	{
-		Id = "cookie",
-		Name = "Choc Chip Cookie",
-		Category = "Bakery",
-		Price = 12,
-		TaxRate = 0,
-		Stock = 40,
-		Colour = Color3.fromRGB(176, 120, 70),
-		Tool = "Choc Chip Cookie",
-	},
-	{
-		Id = "muffin",
-		Name = "Blueberry Muffin",
-		Category = "Bakery",
-		Price = 22,
-		TaxRate = 0,
-		Stock = 24,
-		Colour = Color3.fromRGB(110, 98, 170),
-		Tool = "Blueberry Muffin",
-	},
-	{
-		Id = "bagel",
-		Name = "Everything Bagel",
-		Category = "Bakery",
-		Price = 26,
-		TaxRate = 0,
-		Stock = 4,
-		Colour = Color3.fromRGB(205, 160, 110),
-		Tool = "Everything Bagel",
-	},
-	{
-		Id = "mug",
-		Name = "Brickbrew Mug",
-		Category = "Merch",
-		Price = 120,
+		Id = "gravitycoil",
+		Name = "Gravity Coil",
+		Category = "Gear",
+		Price = 25,
 		TaxRate = 20,
 		Stock = 10,
-		Colour = Color3.fromRGB(240, 240, 240),
-		Tool = "Brickbrew Mug",
+		Colour = rgb(120, 80, 220),
+		Tool = "Gravity Coil",
 	},
 	{
-		Id = "beans",
-		Name = "House Beans 250 g",
-		Category = "Merch",
-		Price = 90,
-		TaxRate = 0,
+		Id = "speedcoil",
+		Name = "Speed Coil",
+		Category = "Gear",
+		Price = 25,
+		TaxRate = 20,
+		Stock = 10,
+		Colour = rgb(40, 200, 120),
+		Tool = "Speed Coil",
+	},
+	{
+		Id = "grapplehook",
+		Name = "Grapple Hook",
+		Category = "Gear",
+		Price = 30,
+		TaxRate = 20,
+		Stock = 6,
+		Colour = rgb(90, 100, 120),
+		Tool = "Grapple Hook",
+	},
+	{
+		Id = "magiccarpet",
+		Name = "Magic Carpet",
+		Category = "Gear",
+		Price = 60,
+		TaxRate = 20,
+		Stock = 3,
+		Colour = rgb(170, 40, 90),
+		Tool = "Magic Carpet",
+	},
+	{
+		Id = "jetpack",
+		Name = "Jetpack",
+		Category = "Gear",
+		Price = 80,
+		TaxRate = 20,
+		Stock = 2,
+		Colour = rgb(160, 165, 175),
+		Tool = "Jetpack",
+	},
+	-- Tools
+	{
+		Id = "sword",
+		Name = "Linked Sword",
+		Category = "Tools",
+		Price = 15,
+		TaxRate = 20,
+		Colour = rgb(200, 205, 215),
+		Tool = "Linked Sword",
+	},
+	{
+		Id = "paintball",
+		Name = "Paintball Gun",
+		Category = "Tools",
+		Price = 20,
+		TaxRate = 20,
+		Colour = rgb(30, 140, 230),
+		Tool = "Paintball Gun",
+	},
+	{
+		Id = "slingshot",
+		Name = "Slingshot",
+		Category = "Tools",
+		Price = 8,
+		TaxRate = 20,
+		Colour = rgb(130, 85, 50),
+		Tool = "Slingshot",
+	},
+	{
+		Id = "flashlight",
+		Name = "Flashlight",
+		Category = "Tools",
+		Price = 5,
+		TaxRate = 20,
+		Colour = rgb(250, 220, 90),
+		Tool = "Flashlight",
+	},
+	{
+		Id = "boombox",
+		Name = "Boombox",
+		Category = "Tools",
+		Price = 12,
+		TaxRate = 20,
+		Stock = 4,
+		Colour = rgb(45, 45, 55),
+		Tool = "Boombox",
+	},
+	-- Cosmetics
+	{
+		Id = "partyhat",
+		Name = "Party Hat",
+		Category = "Cosmetics",
+		Price = 6,
+		TaxRate = 20,
+		Colour = rgb(255, 90, 160),
+		Tool = "Party Hat",
+	},
+	{
+		Id = "tophat",
+		Name = "Top Hat",
+		Category = "Cosmetics",
+		Price = 10,
+		TaxRate = 20,
+		Colour = rgb(25, 25, 30),
+		Tool = "Top Hat",
+	},
+	{
+		Id = "sparkletrail",
+		Name = "Sparkle Trail",
+		Category = "Cosmetics",
+		Price = 18,
+		TaxRate = 20,
 		Stock = 15,
-		Colour = Color3.fromRGB(70, 45, 30),
+		Colour = rgb(120, 220, 255),
 	},
 	{
-		Id = "giftcard",
-		Name = "Gift Card",
-		Category = "Merch",
-		Price = 250,
-		TaxRate = 0,
-		Colour = Color3.fromRGB(88, 130, 255),
+		Id = "crown",
+		Name = "Golden Crown",
+		Category = "Cosmetics",
+		Price = 150,
+		TaxRate = 20,
+		Colour = rgb(240, 190, 40),
+		Tool = "Golden Crown",
 	},
 }
 

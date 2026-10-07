@@ -103,7 +103,7 @@ local bob = A.engine.addPlayer(3, "Bob", FAR)
 local dee = B.engine.addPlayer(4, "Dee", BEHIND)
 local eve = B.engine.addPlayer(5, "Eve", AT_COUNTER)
 settle(0.2)
-check(cash(bob) == 500 and cash(eve) == 500, "new customers start with 500 Cash")
+check(cash(bob) == 100 and cash(eve) == 100, "new customers start with £100")
 check(
 	ann:GetAttribute("POSRole") == "Manager" and bob:GetAttribute("POSRole") == "Customer",
 	"roles exposed as POSRole"
@@ -125,7 +125,7 @@ settle()
 toast = A.engine.lastPush(ann, "Toast")
 check(toast and string.find(toast.text, "being used by Cass", 1, true), "second staff member is told it is in use")
 
-local CART = { { productId = "latte", qty = 2 }, { productId = "bagel", qty = 1 } }
+local CART = { { productId = "bloxycola", qty = 2 }, { productId = "boombox", qty = 1 } }
 
 step("Checkout rules")
 refused(A.call(cass, "checkout.start", CART, 0, 3), "Open a shift", "no payments before a shift is open")
@@ -139,19 +139,19 @@ refused(A.call(cass, "checkout.start", CART, 0, 2), "can't ring up your own", "n
 step("Malformed requests are rejected cleanly")
 refused(A.call(cass, "checkout.start", "cart", 0, 3), "Invalid cart", "cart that is not a table")
 refused(
-	A.call(cass, "checkout.start", { { productId = "latte", qty = 1.5 } }, 0, 3),
+	A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 1.5 } }, 0, 3),
 	"Invalid cart line",
 	"fractional quantity"
 )
 refused(
-	A.call(cass, "checkout.start", { { productId = "latte", qty = 1 } }, 0 / 0, 3),
+	A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 1 } }, 0 / 0, 3),
 	"Invalid discount",
 	"NaN discount"
 )
 refused(A.call(cass, "checkout.start", { { productId = "caviar", qty = 1 } }, 0, 3), "not available", "unknown product")
 refused(A.call(cass, "checkout.start", CART, 0, "3"), "Choose a customer", "customer id as a string")
 refused(
-	A.call(cass, "checkout.start", { { productId = "latte", qty = 99 } }, 0, 3),
+	A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 99 } }, 0, 3),
 	"Invalid cart line",
 	"quantity over the limit"
 )
@@ -163,26 +163,26 @@ refused(A.call(cass, 42), "Bad request", "non-string action")
 step("Customer approves a payment")
 local started = ok(A.call(cass, "checkout.start", CART, 0, 3), "cashier charges Bob")
 local request = A.engine.lastPush(bob, "PaymentRequest")
-check(request and request.total == 82, "Bob sees a bill for 82 (2 x 28 + 26)", request and request.total)
+check(request and request.total == 18, "Bob sees a bill for £18 (2 x £3 + £12)", request and request.total)
 check(display(A) == "Please approve", "register screen asks the customer to approve", display(A))
 refused(A.call(cass, "checkout.start", CART, 0, 3), "already waiting", "one payment at a time per register")
 local paid = ok(A.call(bob, "checkout.respond", started.orderId, true), "Bob pays")
 settle()
-check(cash(bob) == 418, "Bob's Cash goes from 500 to 418", cash(bob))
+check(cash(bob) == 82, "Bob's Cash goes from £100 to £82", cash(bob))
 local items = bob.Backpack:GetChildren()
 check(
-	count(items, "Caramel Latte") == 2 and count(items, "Everything Bagel") == 1,
-	"Bob receives 2 lattes and 1 bagel as Tools"
+	count(items, "Bloxy Cola") == 2 and count(items, "Boombox") == 1,
+	"Bob receives 2 Bloxy Colas and 1 Boombox as Tools"
 )
 local update = A.engine.lastPush(cass, "OrderUpdate")
 check(
-	update and update.status == "paid" and update.sale.receipt == "BB-000001",
-	"cashier gets receipt BB-000001",
+	update and update.status == "paid" and update.sale.receipt == "BM-000001",
+	"cashier gets receipt BM-000001",
 	update and update.sale and update.sale.receipt
 )
 check(A.engine.lastPush(bob, "Receipt") ~= nil, "Bob gets the receipt")
-check(paid.receipt == "BB-000001", "response carries the receipt number")
-check(A.module("Services.Catalogue").get("bagel").stock == 3, "bagel stock 4 -> 3")
+check(paid.receipt == "BM-000001", "response carries the receipt number")
+check(A.module("Services.Catalogue").get("boombox").stock == 3, "Boombox stock 4 -> 3")
 check(display(A) == "Thank you!", "register screen says Thank you!", display(A))
 refused(
 	A.call(bob, "checkout.respond", started.orderId, true),
@@ -191,87 +191,87 @@ refused(
 )
 
 step("Decline, cancel and timeout")
-local o = ok(A.call(cass, "checkout.start", { { productId = "espresso", qty = 1 } }, 0, 3), "charge an espresso")
+local o = ok(A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 1 } }, 0, 3), "charge a Bloxy Cola")
 ok(A.call(bob, "checkout.respond", o.orderId, false), "Bob declines")
 check(A.engine.lastPush(cass, "OrderUpdate").status == "declined", "cashier sees declined")
-o = ok(A.call(cass, "checkout.start", { { productId = "espresso", qty = 1 } }, 0, 3), "charge again")
+o = ok(A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 1 } }, 0, 3), "charge again")
 ok(A.call(cass, "checkout.cancel", o.orderId), "cashier cancels")
 check(A.engine.lastPush(bob, "PaymentClosed") ~= nil, "Bob's payment screen closes")
 local Config = A.sharedModule("Config")
 Config.Checkout.PaymentTimeout = 0.3
-o = ok(A.call(cass, "checkout.start", { { productId = "espresso", qty = 1 } }, 0, 3), "charge with a short timeout")
+o = ok(A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 1 } }, 0, 3), "charge with a short timeout")
 settle(0.5)
 check(A.engine.lastPush(cass, "OrderUpdate").status == "expired", "payment expires")
 refused(A.call(bob, "checkout.respond", o.orderId, true), "no longer available", "expired payment cannot be paid")
 Config.Checkout.PaymentTimeout = 30
-check(cash(bob) == 418, "Bob was not charged for any of these", cash(bob))
+check(cash(bob) == 82, "Bob was not charged for any of these", cash(bob))
 
 step("Not enough money, and prices changing mid-payment")
-o = ok(A.call(cass, "checkout.start", { { productId = "giftcard", qty = 2 } }, 0, 3), "charge 500 for 2 gift cards")
-refused(A.call(bob, "checkout.respond", o.orderId, true), "don't have enough Cash", "Bob cannot pay 500 with 418")
+o = ok(A.call(cass, "checkout.start", { { productId = "crown", qty = 1 } }, 0, 3), "charge £150 for a Golden Crown")
+refused(A.call(bob, "checkout.respond", o.orderId, true), "don't have enough Cash", "Bob cannot pay £150 with £82")
 ok(A.call(cass, "checkout.cancel", o.orderId), "cashier cancels it")
-o = ok(A.call(cass, "checkout.start", { { productId = "latte", qty = 1 } }, 0, 3), "charge a latte at 28")
-ok(A.call(ann, "products.price", "latte", 30), "manager raises the latte to 30 meanwhile")
+o = ok(A.call(cass, "checkout.start", { { productId = "bloxycola", qty = 1 } }, 0, 3), "charge a Bloxy Cola at £3")
+ok(A.call(ann, "products.price", "bloxycola", 4), "manager raises Bloxy Cola to £4 meanwhile")
 refused(
 	A.call(bob, "checkout.respond", o.orderId, true),
 	"Prices or stock changed",
 	"approval refused instead of charging a different amount"
 )
-check(cash(bob) == 418, "Bob still has 418", cash(bob))
+check(cash(bob) == 82, "Bob still has £82", cash(bob))
 
 step("Permissions")
-refused(A.call(cass, "products.price", "latte", 1), "permission", "cashier cannot change prices")
-refused(A.call(cass, "sales.refund", "BB-000001", true), "permission", "cashier cannot refund")
+refused(A.call(cass, "products.price", "bloxycola", 1), "permission", "cashier cannot change prices")
+refused(A.call(cass, "sales.refund", "BM-000001", true), "permission", "cashier cannot refund")
 refused(A.call(bob, "sales.recent"), "permission", "customer cannot read sales")
 refused(A.call(bob, "checkout.start", CART, 0, 3), "permission", "customer cannot charge anyone")
 
 step("Refunds")
-local refundedSale = ok(A.call(ann, "sales.refund", "BB-000001", true), "manager refunds BB-000001 with restock")
+local refundedSale = ok(A.call(ann, "sales.refund", "BM-000001", true), "manager refunds BM-000001 with restock")
 check(refundedSale and refundedSale.refunded and refundedSale.refunded.by == "ann", "sale marked refunded by ann")
-check(cash(bob) == 500, "Bob gets 82 back", cash(bob))
-check(A.module("Services.Catalogue").get("bagel").stock == 4, "bagel returned to stock")
-refused(A.call(ann, "sales.refund", "BB-000001", true), "already been refunded", "second refund refused")
-check(string.find(A.engine.lastPush(bob, "Toast").text, "refunded $82", 1, true), "Bob is told about the refund")
+check(cash(bob) == 100, "Bob gets £18 back", cash(bob))
+check(A.module("Services.Catalogue").get("boombox").stock == 4, "Boombox returned to stock")
+refused(A.call(ann, "sales.refund", "BM-000001", true), "already been refunded", "second refund refused")
+check(string.find(A.engine.lastPush(bob, "Toast").text, "refunded £18", 1, true), "Bob is told about the refund")
 
 ------------------------------------------------------------------------ multi-server
 
 step("Stock and prices stay correct across servers")
 A.module("Services.Store").flushAll()
 settle(0.1)
-check(B.module("Services.Catalogue").get("latte").price == 30, "server B picks up the new latte price")
+check(B.module("Services.Catalogue").get("bloxycola").price == 4, "server B picks up the new Bloxy Cola price")
 prompt(B).Triggered:Fire(dee)
 settle()
 ok(B.call(dee, "shift.open"), "Dee opens a shift on server B")
 local eveOrder =
-	ok(B.call(dee, "checkout.start", { { productId = "bagel", qty = 1 } }, 0, 5), "Dee charges Eve for 1 bagel")
+	ok(B.call(dee, "checkout.start", { { productId = "boombox", qty = 1 } }, 0, 5), "Dee charges Eve for 1 Boombox")
 local eveSale = ok(B.call(eve, "checkout.respond", eveOrder.orderId, true), "Eve pays on server B")
 local bobOrder =
-	ok(A.call(cass, "checkout.start", { { productId = "bagel", qty = 2 } }, 0, 3), "Cass charges Bob for 2 bagels")
+	ok(A.call(cass, "checkout.start", { { productId = "boombox", qty = 2 } }, 0, 3), "Cass charges Bob for 2 Boomboxes")
 local bobSale = ok(A.call(bob, "checkout.respond", bobOrder.orderId, true), "Bob pays on server A")
 A.module("Services.Store").flushAll()
 settle(0.1)
 B.module("Services.Store").flushAll()
 settle(0.1)
-local stored = backend.data.RoPOS_Catalogue_v1.products.products.bagel.stock
-check(stored == 1, "saved bagel stock is 4 - 1 - 2 = 1", stored)
+local stored = backend.data.RoPOS_Catalogue_v1.products.products.boombox.stock
+check(stored == 1, "saved Boombox stock is 4 - 1 - 2 = 1", stored)
 check(
-	A.module("Services.Catalogue").get("bagel").stock == 1,
-	"server A shows 1 bagel",
-	A.module("Services.Catalogue").get("bagel").stock
+	A.module("Services.Catalogue").get("boombox").stock == 1,
+	"server A shows 1 Boombox",
+	A.module("Services.Catalogue").get("boombox").stock
 )
 check(
-	B.module("Services.Catalogue").get("bagel").stock == 1,
-	"server B shows 1 bagel",
-	B.module("Services.Catalogue").get("bagel").stock
+	B.module("Services.Catalogue").get("boombox").stock == 1,
+	"server B shows 1 Boombox",
+	B.module("Services.Catalogue").get("boombox").stock
 )
 refused(
-	A.call(cass, "checkout.start", { { productId = "bagel", qty = 2 } }, 0, 3),
-	"Only 1 Everything Bagel left",
+	A.call(cass, "checkout.start", { { productId = "boombox", qty = 2 } }, 0, 3),
+	"Only 1 Boombox left",
 	"cannot sell stock another server sold"
 )
 check(
-	eveSale.receipt == "BB-000002" and bobSale.receipt == "BB-000003",
-	"receipt numbers continue across servers (BB-000002 on B, BB-000003 on A)",
+	eveSale.receipt == "BM-000002" and bobSale.receipt == "BM-000003",
+	"receipt numbers continue across servers (BM-000002 on B, BM-000003 on A)",
 	eveSale.receipt .. ", " .. bobSale.receipt
 )
 
@@ -279,14 +279,14 @@ step("Refund to a customer who has left, from another server")
 B.engine.removePlayer(eve)
 settle(0.1)
 check(
-	backend.data.RoPOS_Wallets_v1.u5.balance == 474,
-	"Eve's 474 is saved when she leaves",
+	backend.data.RoPOS_Wallets_v1.u5.balance == 88,
+	"Eve's £88 is saved when she leaves",
 	backend.data.RoPOS_Wallets_v1.u5.balance
 )
 ok(A.call(ann, "sales.refund", eveSale.receipt, false), "Ann on server A refunds Eve's sale from server B")
 local eveAgain = B.engine.addPlayer(5, "Eve", AT_COUNTER)
 settle(0.2)
-check(cash(eveAgain) == 500, "Eve rejoins with 500", cash(eveAgain))
+check(cash(eveAgain) == 100, "Eve rejoins with £100", cash(eveAgain))
 
 step("Reports, sales history and audit log merge every server")
 A.module("Services.Store").flushAll()
@@ -295,12 +295,12 @@ settle(0.1)
 local days = ok(B.call(dee, "reports.days", 7), "Dee reads the 7-day report on server B")
 local today = days and days[#days].totals
 check(today and today.count == 3, "3 sales today across both servers", today and today.count)
-check(today and today.sales == 82 + 52 + 26, "160 taken", today and today.sales)
-check(today and today.refunds == 82 + 26, "108 refunded", today and today.refunds)
+check(today and today.sales == 18 + 12 + 24, "£54 taken", today and today.sales)
+check(today and today.refunds == 18 + 12, "£30 refunded", today and today.refunds)
 check(
-	today and today.products.bagel.qty == 4,
-	"4 bagels sold",
-	today and today.products.bagel and today.products.bagel.qty
+	today and today.products.boombox.qty == 4,
+	"4 Boomboxes sold",
+	today and today.products.boombox and today.products.boombox.qty
 )
 local recent = ok(A.call(cass, "sales.recent", 50), "Cass reads recent sales")
 check(recent and #recent == 3, "3 receipts listed", recent and #recent)
@@ -323,8 +323,8 @@ check(
 
 step("Shift close and Z report")
 local z = ok(A.call(cass, "shift.close"), "Cass closes the shift")
-check(z and z.totals.count == 2 and z.totals.sales == 134 and z.net == 134, "Z report: 2 sales, 134 net", z and z.net)
-check(z and z.topProducts[1].id == "bagel", "top item is bagel", z and z.topProducts[1] and z.topProducts[1].id)
+check(z and z.totals.count == 2 and z.totals.sales == 42 and z.net == 42, "Z report: 2 sales, £42 net", z and z.net)
+check(z and z.topProducts[1].id == "boombox", "top item is Boombox", z and z.topProducts[1] and z.topProducts[1].id)
 
 step("Rate limiting")
 local slowed = false
@@ -345,19 +345,19 @@ check(A.engine.lastPush(cass, "CloseRegister") ~= nil, "cashier signed out of th
 check(display(A) == "Closed", "register screen still says Closed", display(A))
 
 step("DataStore outage")
-ok(A.call(ann, "products.stock", "mug", 5), "manager restocks 5 mugs")
+ok(A.call(ann, "products.stock", "grapplehook", 5), "manager restocks 5 Grapple Hooks")
 backend.failNext = 1
 A.module("Services.Store").flushAll()
 check(
-	backend.data.RoPOS_Catalogue_v1.products.products.mug.stock == 15,
+	backend.data.RoPOS_Catalogue_v1.products.products.grapplehook.stock == 11,
 	"the write is retried and lands",
-	backend.data.RoPOS_Catalogue_v1.products.products.mug.stock
+	backend.data.RoPOS_Catalogue_v1.products.products.grapplehook.stock
 )
 
 step("Shutdown saves everything")
-A.call(ann, "products.active", "giftcard", false)
+A.call(ann, "products.active", "crown", false)
 A.engine.shutdown()
-check(backend.data.RoPOS_Catalogue_v1.products.products.giftcard.active == false, "BindToClose flushes pending changes")
+check(backend.data.RoPOS_Catalogue_v1.products.products.crown.active == false, "BindToClose flushes pending changes")
 
 step("Two managers on two servers refund the same sale at the same moment")
 -- Both managers have the receipt open first, so only the DataStore guard can stop the second.
@@ -379,7 +379,7 @@ while finished < 2 do
 end
 local wins = (if results.A.ok then 1 else 0) + (if results.B.ok then 1 else 0)
 check(wins == 1, "exactly one refund succeeds", wins)
-check(cash(bob) == before + 52, "Bob is refunded 52 once", cash(bob) - before)
+check(cash(bob) == before + 24, "Bob is refunded £24 once", cash(bob) - before)
 
 step("No unexpected warnings")
 for _, server in { A, B } do

@@ -1,6 +1,6 @@
 # RoPOS
 
-A point of sale system for Roblox experiences: cafés, shops, restaurants and any roleplay game where staff sell to players.
+A point of sale system for Roblox experiences: shops, cafés, restaurants and any roleplay game where staff sell to players. The demo shop, Blox Mart, sells classic Roblox items (Bloxy Cola, Gravity Coil, Linked Sword, Golden Crown and more) priced in pounds.
 
 Staff walk up to a register and ring up an order. The customer approves the payment on their own screen, the money moves, stock goes down, the items appear in their backpack and both players get a receipt. Managers get shift reports, refunds, price and stock control, 7-day reports and an audit log. Everything is saved and shared across every server of the game.
 
@@ -16,9 +16,9 @@ Double-click [`simulator/index.html`](simulator/index.html). It opens in any bro
 
 You play the staff on the left and the customers on the right:
 
-1. The page opens with Ann (a manager) at the till, a shift open, and 2 lattes and a croissant in the order for Bob.
-2. Press **Charge $76**. Bob's screen on the right shows the bill.
-3. Press **Pay $76** on Bob's screen. Bob's Cash drops, the items land in his backpack and both sides get a receipt.
+1. The page opens with Ann (a manager) at the till, a shift open, and 2 Bloxy Colas and a Pizza Slice in the order for Bob.
+2. Press **Charge £10**. Bob's screen on the right shows the bill.
+3. Press **Pay £10** on Bob's screen. Bob's Cash drops, the items land in his backpack and both sides get a receipt.
 4. Work through **Things to try** under the simulator: declines, a customer who can't afford it, a price change mid-payment, refunds, the cashier's limits and the Z report.
 
 The **Server log** at the bottom shows every request and its result, the same messages the real server sends.
@@ -29,7 +29,7 @@ The simulator is a faithful browser copy of the RoPOS rules for trying things ou
 
 1. Install [Roblox Studio](https://create.roblox.com/) if you don't have it.
 2. Open [`RoPOS.rbxlx`](RoPOS.rbxlx) from this folder (double-click it, or File > Open in Studio).
-3. Press **Play** (F5). A café counter appears in front of you.
+3. Press **Play** (F5). A Blox Mart counter appears in front of you.
 4. Walk round the back of the counter and hold **E** on the till. The POS window opens.
 5. Go to the **Shift** tab and press **Open shift**.
 6. On **Sell**, tap some products, press **Choose customer**, pick yourself and press **Charge**.
@@ -166,10 +166,10 @@ Everything is in `src/shared/Config.luau`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `Store.Name`, `ReceiptPrefix`, `Footer` | Brickbrew Café, `BB` | Shown on screens and receipts |
+| `Store.Name`, `ReceiptPrefix`, `Footer` | Blox Mart, `BM` | Shown on screens and receipts |
 | `Currency.Provider` | `"Builtin"` | `"Leaderstats"` uses a value your game already creates and saves |
-| `Currency.StatName`, `Symbol`, `StartingBalance` | `Cash`, `$`, 500 | |
-| `Tax.Enabled`, `Inclusive` | off, inclusive | Rate is per product (`TaxRate`) |
+| `Currency.StatName`, `Symbol`, `StartingBalance` | `Cash`, `£`, 100 | Prices and balances are whole pounds, like every Roblox currency |
+| `Tax.Enabled`, `Name`, `Inclusive` | off, `VAT`, inclusive | Rate is per product (`TaxRate`, 20 = UK standard rate) |
 | `Staff.GroupId`, `ManagerRank`, `CashierRank` | 0, 250, 10 | Group ranks for roles. `Users` overrides by UserId |
 | `Staff.StudioRole` | `"Manager"` | Role for everyone in play tests. `nil` uses the normal rules |
 | `Discounts.Presets`, `CashierMaxPct` | 0 to 50, 10 | |
@@ -184,8 +184,8 @@ Everything is in `src/shared/Config.luau`.
 ### Products
 
 ```lua
-{ Id = "latte", Name = "Caramel Latte", Category = "Coffee", Price = 28, TaxRate = 20,
-  Stock = 30, Colour = Color3.fromRGB(201, 150, 99), Tool = "Caramel Latte" },
+{ Id = "gravitycoil", Name = "Gravity Coil", Category = "Gear", Price = 25, TaxRate = 20,
+  Stock = 10, Colour = rgb(120, 80, 220), Tool = "Gravity Coil" },
 ```
 
 `Id` must never change, because sales and stock refer to it. Leave out `Stock` for items that are not stock-tracked. `Tool` is the name of a Tool in `ServerStorage.POSItems`. Put your real modelled items there and RoPOS gives them to the customer.
@@ -238,9 +238,9 @@ Run this in a **Local Server** test with 2 players (Test > Clients and Servers),
 | --- | --- | --- |
 | 1 | Player 1 holds E on the till | POS window opens on Sell, shift shows "closed" |
 | 2 | Open a shift | Header pill turns green, register screen shows "Welcome!" |
-| 3 | Add 2 lattes and 1 cookie | Totals update, register screen shows "3 items" and the total |
+| 3 | Add 2 Bloxy Colas and 1 Boombox | Totals update, register screen shows "3 items" and the total |
 | 4 | Player 2 stands at the counter, Player 1 chooses them and presses Charge | Player 2 sees the bill with countdown, the screen shows "Please approve" |
-| 5 | Player 2 presses Pay | Both get a receipt, Player 2's Cash goes down, Tools appear in Player 2's backpack, cookie stock goes down by 1 |
+| 5 | Player 2 presses Pay | Both get a receipt, Player 2's Cash goes down, Tools appear in Player 2's backpack, Boombox stock goes down by 1 |
 | 6 | Charge again and Player 2 presses Decline | Player 1 sees "declined", nothing is charged |
 | 7 | Charge again and wait 30 s | Payment expires on both sides |
 | 8 | Sales tab, open the receipt, Refund with restock | Player 2 gets the money back, stock returns, the receipt shows REFUNDED |

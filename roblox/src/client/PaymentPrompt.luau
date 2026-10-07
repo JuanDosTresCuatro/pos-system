@@ -78,7 +78,7 @@ function PaymentPrompt.show(order)
 		Parent = dialog,
 		Children = {
 			UI.new("TextLabel", {
-				Text = "☕",
+				Text = "🛒",
 				TextSize = 24,
 				BackgroundColor3 = C.AccentSoft,
 				Size = UDim2.fromOffset(48, 48),
